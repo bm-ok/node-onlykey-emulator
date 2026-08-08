@@ -196,6 +196,176 @@ const DROP = [
  * fails the build loudly instead of silently producing an unshifted binary
  * that segfaults on first use.
  */
+/*
+ * Windows filesystems are case-insensitive, and the Arduino Time library ships
+ * a header called Time.h in a directory that is on the include path. So when
+ * the MSVC STL's <ctime> does `#include <time.h>`, it finds Arduino's Time.h
+ * instead of the CRT's - and every translation unit that reaches <chrono>,
+ * <thread> or <mutex> fails with a page of "no member named 'clock_t' in the
+ * global namespace".
+ *
+ * There is no include-order fix: -I directories are searched before the system
+ * ones for angled includes, so the Arduino header always wins.
+ *
+ * What makes this tractable is that Time.h is a single line - `#include
+ * "TimeLib.h"` - and every reference to it in the firmware is quoted. So
+ * stage.js copies TimeLib.h into .stage/wincompat/, binding.gyp swaps that
+ * directory in for the Arduino one on Windows, and these patches point the
+ * four staged users straight at TimeLib.h.
+ *
+ * Time.cpp and DateStrings.cpp are compiled from the Arduino tree rather than
+ * from .stage, and their `#include "Time.h"` resolves against their own
+ * directory before any -I path, so they are unaffected and need no patch.
+ */
+const WINDOWS_TIME_H_USERS = [
+  'libraries/fido2/ctaphid.cpp',
+  'libraries/fido2/device.cpp',
+  'libraries/onlykey/okcore.cpp',
+  'sketch/OnlyKey.ino',
+];
+
+const WINDOWS_TIME_H_PATCHES = WINDOWS_TIME_H_USERS.map((f) => ({
+  file: f,
+  status: 'permanent',
+  platform: 'win32',
+  note: 'Time.h collides with the CRT\'s <time.h> on a case-insensitive '
+      + 'filesystem. Points at TimeLib.h, which is all Time.h forwards to.',
+  edits: [['#include "Time.h"', '#include "TimeLib.h"']],
+}));
+
+/*
+ * OnlyKey.ino provides newlib syscall stubs so the bare-metal link resolves:
+ *
+ *     extern "C" {
+ *       int _getpid(){ return -1;}
+ *       int _kill(int pid, int sig){ return -1; }
+ *       int _write(){return -1;}
+ *     }
+ *
+ * The MSVC CRT has real _write() and _getpid(), so the stubs collide with
+ * them - "lld-link: error: duplicate symbol: _write". Renaming is safer than
+ * deleting: ok_hal.cpp calls the CRT's _write() for the backing files, and a
+ * stub that always returns -1 winning the name would make every write to
+ * flash.bin fail silently rather than fail to link.
+ *
+ * _kill has no CRT counterpart and is left alone.
+ *
+ * Line-at-a-time rather than one multi-line anchor, because the staged file's
+ * line endings depend on how the firmware repo was checked out and a \n in
+ * the pattern would simply stop matching on a CRLF clone.
+ */
+const WINDOWS_SYSCALL_STUB_PATCH = {
+  file: 'sketch/OnlyKey.ino',
+  status: 'provisional',
+  platform: 'win32',
+  note: 'newlib syscall stubs collide with the MSVC CRT. Promote as an '
+      + '#if !defined(_WIN32) guard around the extern "C" block.',
+  edits: [
+    ['int _write(){return -1;}',  'int okemu_unused_write(){return -1;}'],
+    ['int _getpid(){ return -1;}', 'int okemu_unused_getpid(){ return -1;}'],
+  ],
+};
+
+/*
+ * Shared globals re-declared in C++ linkage, which only links by luck.
+ *
+ * okcore.h wraps its declarations in `extern "C"` (line 83 to 380), so these
+ * symbols have C linkage. Several .cpp files then re-declare them locally
+ * WITHOUT the linkage specification - sometimes at block scope, sometimes
+ * with a different type than the definition - and those declarations are C++.
+ *
+ * The Itanium C++ ABI does not mangle the names of global variables, so on
+ * Linux `extern int outputmode;` and `extern "C" int outputmode;` both resolve
+ * to the symbol `outputmode` and nobody notices. The MSVC ABI does mangle
+ * them, so the C++ declarations become distinct symbols that nothing defines:
+ * seven undefined symbols at link time, referenced from a dozen places.
+ *
+ * The linkage specification is added; the declared type is left exactly as it
+ * was. That is deliberate. Some of these disagree with the definition -
+ * outputmode and Profile_Offset are `int` in okcore.cpp and `uint8_t` in
+ * several users, keyboard_buffer is an array declared as a pointer - and
+ * correcting the types would change what those translation units read, which
+ * is a firmware behaviour change dressed up as a build fix. With C linkage the
+ * names resolve and the type confusion behaves exactly as it does on Linux
+ * today. It stays a latent bug, and it stays visible here rather than being
+ * quietly papered over.
+ *
+ * PROVISIONAL: the real repair is to include the header instead of
+ * re-declaring, and to make the types agree with the definition. Both are
+ * firmware changes.
+ */
+const WINDOWS_C_LINKAGE_DECLS = {
+  'core/okemu_usb.cpp': [
+    'extern uint8_t setBuffer[9];',
+    'extern uint8_t keyboard_buffer[];',
+  ],
+  'libraries/fido2/ctaphid.cpp': ['extern int outputmode;'],
+  'libraries/fido2/device.cpp': [
+    'extern int Profile_Offset;',
+    'extern int large_buffer_offset;',
+    'extern uint8_t CRYPTO_AUTH;',
+  ],
+  'libraries/fido2/ok_extension.cpp': [
+    'extern uint8_t CRYPTO_AUTH;',
+    'extern int outputmode;',
+  ],
+  'libraries/onlykey/okcore.cpp': ['extern uint8_t KeyboardLayout[1];'],
+  'libraries/onlykey/okcrypto.cpp': [
+    'extern uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];',
+    'extern uint8_t CRYPTO_AUTH;',
+    'extern int large_buffer_offset;',
+    'extern uint8_t outputmode;',
+    'extern uint8_t setBuffer[9];',
+  ],
+  'libraries/onlykey/okpqc.cpp': [
+    'extern int      large_buffer_offset;',
+    'extern uint8_t  CRYPTO_AUTH;',
+    'extern int      outputmode;',
+  ],
+  'libraries/password/password.cpp': [
+    'extern uint8_t Profile_Offset;',
+    'extern int Profile_Offset;',
+  ],
+  'sketch/OnlyKey.ino': [
+    'extern uint8_t Profile_Offset;',
+    'extern uint8_t KeyboardLayout[1];',
+    'extern uint8_t CRYPTO_AUTH;',
+    'extern uint8_t outputmode;',
+    'extern int large_buffer_offset;',
+  ],
+};
+
+const WINDOWS_C_LINKAGE_PATCHES =
+  Object.entries(WINDOWS_C_LINKAGE_DECLS).map(([file, decls]) => ({
+    file,
+    status: 'provisional',
+    platform: 'win32',
+    note: 'Globals re-declared in C++ linkage; MSVC mangles variable names '
+        + 'and Itanium does not, so these resolve on Linux and not here. '
+        + 'Promote by including the header instead of re-declaring.',
+    /*
+     * Deleted rather than annotated. Adding `extern "C"` in place does not
+     * work: six of these are at block scope, and C++ allows a
+     * linkage-specification only at namespace scope ("expected
+     * unqualified-id"). And leaving them while the prelude also declares the
+     * symbol would be a redeclaration with a different type wherever the two
+     * disagree, which is most of them.
+     *
+     * Leading whitespace is not part of the pattern, so block-scope
+     * declarations match too, and every occurrence in the file is removed
+     * rather than just the first.
+     */
+    /*
+     * A line comment, not a block comment. One of these declarations -
+     * ctaphid.cpp's outputmode - sits inside a commented-out region, and a
+     * replacement containing a close-comment marker terminates that region
+     * early, turning the rest of it into live code and producing a cascade of
+     * syntax errors nowhere near the edit. Each declaration is alone on its
+     * line, so a line comment is safe in both contexts.
+     */
+    edits: decls.map((d) => [d, '// declared in okemu_prelude.h - see stage.js']),
+  }));
+
 const WINDOWS_FLASH_PATCH = {
   file: 'libraries/onlykey/okcore.h',
   status: 'provisional',
@@ -331,6 +501,42 @@ const PATCHES = [
   {
     file: 'core/Print.cpp',
     status: 'permanent',
+    platform: 'win32',
+    note: 'Teensy\'s _write() collides with the MSVC CRT\'s _write(). Renamed '
+        + 'so the CRT keeps the name.',
+    edits: [
+      /*
+       * Print.cpp defines
+       *
+       *     extern "C" __attribute__((weak))
+       *     int _write(int file, char *ptr, int len)
+       *
+       * as newlib's syscall stub, so that vdprintf's output finds its way
+       * back to a Print object. The MSVC CRT has its own _write(), and COFF
+       * has no real weak-symbol semantics, so the two collide outright:
+       * "lld-link: error: duplicate symbol: _write".
+       *
+       * Renaming rather than deleting, for two reasons. It keeps the diff
+       * honest about what upstream contains. And it matters which one wins:
+       * ok_hal.cpp calls the CRT's _write() for the backing files, and if
+       * Teensy's definition took the name instead, those calls would cast a
+       * file descriptor to a Print * and write through it. That would not
+       * fail to link - it would corrupt flash.bin.
+       *
+       * Nothing calls it any more in either case: the Print::printf patch
+       * below routes through okemu_vdprintf(), which uses Print::write
+       * directly.
+       *
+       * PERMANENT - vendored Teensy code, no OK_EMULATOR gate to promote to.
+       */
+      ['int _write(int file, char *ptr, int len)',
+       'int okemu_unused_teensy_write(int file, char *ptr, int len)'],
+    ],
+  },
+
+  {
+    file: 'core/Print.cpp',
+    status: 'permanent',
     note: 'Vendored Teensy core. Print::printf passes `(int)this` as a file '
         + 'descriptor, which truncates a 64-bit pointer. Redirected to '
         + 'okemu_vdprintf() with the pointer intact.',
@@ -370,6 +576,11 @@ const PATCHES = [
    * real base, and shifting the constants there would move the firmware off
    * its own storage. */
   WINDOWS_FLASH_PATCH,
+  WINDOWS_SYSCALL_STUB_PATCH,
+
+  /* Windows only, by their `platform` field - see WINDOWS_TIME_H_USERS. */
+  ...WINDOWS_TIME_H_PATCHES,
+  ...WINDOWS_C_LINKAGE_PATCHES,
 ];
 
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
@@ -505,6 +716,29 @@ function main() {
   // 5. vendored libraries and the sketch
   copyDir(LIB_SRC, STAGE_LIB);
   copyDir(path.join(FW, 'OnlyKey'), STAGE_SKETCH);
+
+  /*
+   * 5b. Windows: a Time.h-free home for TimeLib.h.
+   *
+   * The Arduino Time library's directory cannot stay on the include path here,
+   * because Time.h and the CRT's <time.h> are the same filename to a
+   * case-insensitive filesystem. binding.gyp swaps this directory in for it;
+   * see WINDOWS_TIME_H_USERS above for the whole story.
+   */
+  let wincompat = 0;
+  if (process.platform === 'win32') {
+    const src = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries',
+                          'Time', 'TimeLib.h');
+    if (fs.existsSync(src)) {
+      const dst = path.join(STAGE, 'wincompat');
+      fs.mkdirSync(dst, { recursive: true });
+      fs.copyFileSync(src, path.join(dst, 'TimeLib.h'));
+      wincompat = 1;
+    } else {
+      console.error(`stage: WARNING - TimeLib.h not found at ${src}`);
+      process.exitCode = 1;
+    }
+  }
 
   // 6. documented source-level fixups
   const patched = applyPatches();

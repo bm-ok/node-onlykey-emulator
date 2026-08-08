@@ -103,6 +103,50 @@ typedef long long ssize_t;
 #endif
 
 /*
+ * Shared firmware globals, declared once with C linkage and the type each one
+ * is actually defined with.
+ *
+ * okcore.h wraps its declarations in `extern "C"`, so these symbols have C
+ * linkage. Several .cpp files then re-declare them locally without the
+ * linkage specification, and often with a different type than the definition:
+ * outputmode and Profile_Offset are `int` in okcore.cpp and `uint8_t` in
+ * their users, and keyboard_buffer is an array declared as a pointer.
+ *
+ * The Itanium C++ ABI does not mangle global variable names, so on Linux
+ * every one of those spellings resolves to the same symbol and the type
+ * confusion is invisible. The MSVC ABI does mangle them, so each variant
+ * becomes a distinct symbol that nothing defines - seven undefined symbols at
+ * link time.
+ *
+ * Declaring them here, force-included ahead of everything, gives all
+ * translation units one consistent view; scripts/stage.js deletes the local
+ * re-declarations so nothing contradicts it. It has to be a single namespace-
+ * scope declaration rather than `extern "C"` added in place, because six of
+ * the originals are at block scope and C++ permits a linkage-specification
+ * only at namespace scope.
+ *
+ * The types here are the definitions' types, which means the translation
+ * units that declared uint8_t now see int. That is a real change, and it is
+ * the correct direction - reading one byte of an int was always wrong - but
+ * it is a firmware behaviour change and should be treated as one. In practice
+ * these hold small values on a little-endian host, so the low byte the old
+ * declarations read is the same value.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern int     large_buffer_offset;   /* okcore.cpp: int                  */
+extern uint8_t keyboard_buffer[];     /* okcore.cpp: uint8_t[80]          */
+extern uint8_t KeyboardLayout[];      /* keylayouts.c: uint8_t[1], C file */
+extern uint8_t setBuffer[];           /* okcore.cpp: uint8_t[9]           */
+extern uint8_t CRYPTO_AUTH;           /* okcore.cpp: uint8_t              */
+extern int     outputmode;            /* okcore.cpp: int                  */
+extern int     Profile_Offset;        /* okcore.cpp: int                  */
+#ifdef __cplusplus
+}
+#endif
+
+/*
  * `_Bool` in C++. glibc's <stdbool.h> carries a C++ branch that reads
  *
  *     #if defined __cplusplus

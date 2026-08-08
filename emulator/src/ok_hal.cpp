@@ -3,6 +3,34 @@
  */
 #include "ok_hal.h"
 
+#ifdef _WIN32
+/*
+ * The Windows half of the HAL. Every POSIX facility this file leans on has a
+ * counterpart, and the mapping is one-to-one apart from two places where the
+ * platforms genuinely differ - see okemu_map_peripherals() for the early
+ * initialiser and okemu_hal_init() for why there is no fallback walk here.
+ *
+ *   mmap(MAP_ANONYMOUS|MAP_FIXED_NOREPLACE)  VirtualAlloc(addr, MEM_COMMIT)
+ *   mmap(MAP_SHARED) on a file               CreateFileMapping+MapViewOfFileEx
+ *   msync(MS_SYNC)                           FlushViewOfFile
+ *   clock_gettime(CLOCK_MONOTONIC)           QueryPerformanceCounter
+ *   nanosleep                                high-resolution waitable timer
+ *   ftruncate / pread / pwrite               _chsize_s / _lseeki64 + _read/_write
+ *   __attribute__((constructor(101)))        a .CRT$XCT initialiser
+ */
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#  include <io.h>
+#  include <direct.h>
+#  include <share.h>
+#  include <sys/stat.h>
+#  include <fcntl.h>
+#  include <errno.h>
+#  include <stdio.h>
+#  include <string.h>
+#  include <time.h>
+#else
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -11,6 +39,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -66,6 +95,11 @@ struct Hal {
   std::string dir;
   uint8_t *flash = nullptr;     /* mapped at OKEMU_FLASH_BASE */
   int flash_fd = -1;
+#ifdef _WIN32
+  /* The section object behind the flash view. Windows keeps the mapping and
+   * the file handle as separate objects, and both have to outlive the view. */
+  HANDLE flash_map = NULL;
+#endif
   size_t flash_mapped_off = 0;  /* first byte actually mapped (see init) */
   uint8_t eeprom[OKEMU_EEPROM_SIZE];
   int eeprom_fd = -1;
@@ -97,27 +131,146 @@ struct Hal {
 
 Hal g;
 
+#ifdef _WIN32
+
+uint64_t now_us() {
+  /* QPC is the monotonic clock here: unaffected by wall-clock changes, and
+   * its frequency is fixed for the life of the process, so it is queried
+   * once. */
+  static LARGE_INTEGER freq = { };
+  if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+  LARGE_INTEGER c;
+  QueryPerformanceCounter(&c);
+  return (uint64_t)((c.QuadPart * 1000000LL) / freq.QuadPart);
+}
+
+/*
+ * Sub-millisecond sleep.
+ *
+ * Sleep() is bounded by the scheduler tick, ~15.6 ms by default, which is far
+ * too coarse for the SysTick thread - millis() would advance in 15 ms jumps
+ * and payload()'s `while (millis() < wait)` loops would quantise to that.
+ *
+ * A high-resolution waitable timer gets real sub-millisecond waits without
+ * timeBeginPeriod(), which would raise the timer resolution for the entire
+ * system rather than this process. The flag needs Windows 10 1803; if the
+ * timer cannot be created at all we fall back to Sleep() and accept the
+ * coarseness rather than spin.
+ */
+void sleep_us(uint64_t us) {
+  static HANDLE timer = NULL;
+  static bool tried = false;
+
+  if (!tried) {
+    tried = true;
+    timer = CreateWaitableTimerExW(NULL, NULL,
+                                   CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                   TIMER_ALL_ACCESS);
+    if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
+  }
+
+  if (timer) {
+    LARGE_INTEGER due;
+    due.QuadPart = -(LONGLONG)(us * 10ULL);   /* negative = relative, 100 ns */
+    if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+      WaitForSingleObject(timer, INFINITE);
+      return;
+    }
+  }
+  Sleep((DWORD)(us / 1000ULL));
+}
+
+#else
+
 uint64_t now_us() {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+void sleep_us(uint64_t us) {
+  struct timespec ts;
+  ts.tv_sec  = (time_t)(us / 1000000ULL);
+  ts.tv_nsec = (long)((us % 1000000ULL) * 1000ULL);
+  nanosleep(&ts, nullptr);
+}
+
+#endif
+
+/*
+ * Positional read/write. Windows has no pread/pwrite, and the CRT's fd layer
+ * has no atomic positional form at all - but neither backing file is touched
+ * from more than one thread, so seek-then-transfer is equivalent here.
+ */
+#ifdef _WIN32
+ssize_t pread_at(int fd, void *buf, size_t n, uint64_t off) {
+  if (_lseeki64(fd, (__int64)off, SEEK_SET) < 0) return -1;
+  return _read(fd, buf, (unsigned)n);
+}
+ssize_t pwrite_at(int fd, const void *buf, size_t n, uint64_t off) {
+  if (_lseeki64(fd, (__int64)off, SEEK_SET) < 0) return -1;
+  return _write(fd, buf, (unsigned)n);
+}
+inline int     okemu_close(int fd) { return _close(fd); }
+inline ssize_t okemu_write(int fd, const void *b, size_t n) {
+  return _write(fd, b, (unsigned)n);
+}
+#else
+ssize_t pread_at(int fd, void *buf, size_t n, uint64_t off) {
+  return pread(fd, buf, n, (off_t)off);
+}
+ssize_t pwrite_at(int fd, const void *buf, size_t n, uint64_t off) {
+  return pwrite(fd, buf, n, (off_t)off);
+}
+inline int     okemu_close(int fd) { return ::close(fd); }
+inline ssize_t okemu_write(int fd, const void *b, size_t n) {
+  return ::write(fd, b, n);
+}
+#endif
+
 /* Open `name` under the storage dir at `size` bytes, creating it filled with
  * `fill` if absent. Returns an fd or -1. */
 int open_backing(const std::string &dir, const char *name, size_t size,
                  uint8_t fill, char *err, size_t errlen) {
   std::string path = dir + "/" + name;
+#ifdef _WIN32
+  /*
+   * _O_BINARY is not optional: without it the CRT translates \n to \r\n on the
+   * way out and eats \r on the way in, which would corrupt a flash image
+   * wherever it happened to contain 0x0A.
+   */
+  int fd = -1;
+  if (_sopen_s(&fd, path.c_str(), _O_RDWR | _O_CREAT | _O_BINARY, _SH_DENYNO,
+               _S_IREAD | _S_IWRITE) != 0) {
+    fd = -1;
+  }
+#else
   int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0600);
+#endif
   if (fd < 0) {
     snprintf(err, errlen, "cannot open %s: %s", path.c_str(), strerror(errno));
     return -1;
   }
+  /* Current size, and whether it needs (re)initialising. */
+#ifdef _WIN32
+  const bool wrong_size = ((uint64_t)_filelengthi64(fd) != (uint64_t)size);
+#else
   struct stat st;
-  if (fstat(fd, &st) == 0 && (size_t)st.st_size != size) {
-    if (ftruncate(fd, 0) != 0 || ftruncate(fd, (off_t)size) != 0) {
+  const bool wrong_size = (fstat(fd, &st) == 0 && (size_t)st.st_size != size);
+#endif
+
+  if (wrong_size) {
+    /* Truncate to nothing, then write the fill below, which grows it back to
+     * `size`. The POSIX path also pre-extends; the write is what actually
+     * sets the contents on both. */
+#ifdef _WIN32
+    const bool sized = (_chsize_s(fd, 0) == 0 && _lseeki64(fd, 0, SEEK_SET) == 0);
+#else
+    const bool sized = (ftruncate(fd, 0) == 0 && ftruncate(fd, (off_t)size) == 0);
+#endif
+    if (!sized) {
       snprintf(err, errlen, "cannot size %s: %s", path.c_str(), strerror(errno));
-      ::close(fd);
+      okemu_close(fd);
       return -1;
     }
     /* A blank NOR flash / EEPROM array reads as 0xFF. */
@@ -125,9 +278,9 @@ int open_backing(const std::string &dir, const char *name, size_t size,
     size_t left = size;
     while (left) {
       size_t n = left < blank.size() ? left : blank.size();
-      if (write(fd, blank.data(), n) != (ssize_t)n) {
+      if (okemu_write(fd, blank.data(), n) != (ssize_t)n) {
         snprintf(err, errlen, "cannot init %s: %s", path.c_str(), strerror(errno));
-        ::close(fd);
+        okemu_close(fd);
         return -1;
       }
       left -= n;
@@ -157,9 +310,74 @@ int open_backing(const std::string &dir, const char *name, size_t size,
 int g_map_status = -1;   /* 0 = mapped, -1 = not yet, >0 = errno */
 char g_map_error[256] = "peripheral mapping never ran";
 
+#ifdef _WIN32
+/*
+ * MSVC has no constructor priorities, so the ordering is expressed through
+ * the CRT's own initialiser sections instead. C++ static constructors are
+ * emitted into .CRT$XCU; anything in an earlier suffix runs first, and the
+ * linker concatenates them alphabetically. .CRT$XCT therefore lands ahead of
+ * every global constructor in the module, which is exactly what priority 101
+ * buys on the GNU side.
+ *
+ * The /INCLUDE keeps the pointer alive: this object file is pulled in for
+ * okemu_hal_init() and friends, but the initialiser itself is referenced by
+ * nothing, and without the directive the linker is free to drop it - which
+ * would show up as a crash during module load rather than as a link error.
+ */
+extern "C" void okemu_map_peripherals(void);
+static int okemu_run_map_peripherals(void) { okemu_map_peripherals(); return 0; }
+
+#  pragma section(".CRT$XCT", long, read)
+/*
+ * __attribute__((used)) rather than a /INCLUDE: linker directive. The pointer
+ * has internal linkage - it is only ever read by the CRT walking the section -
+ * so there is no external name for /INCLUDE to ask for, and naming it there
+ * produces "undefined symbol: okemu_early_init" at link time. `used` is the
+ * direct way to say what is actually meant: keep this even though nothing
+ * references it.
+ *
+ * The object file itself is pulled in regardless, because okemu_hal_init()
+ * lives here and the addon calls it.
+ */
+__declspec(allocate(".CRT$XCT")) __attribute__((used))
+static int (*okemu_early_init)(void) = okemu_run_map_peripherals;
+
+extern "C" void okemu_map_peripherals(void)
+#else
 __attribute__((constructor(101)))
-void okemu_map_peripherals(void) {
+void okemu_map_peripherals(void)
+#endif
+{
   for (const Region &r : kPeripherals) {
+#ifdef _WIN32
+    /*
+     * VirtualAlloc at an explicit base is the direct analogue of
+     * MAP_FIXED_NOREPLACE: it fails rather than relocating if the range is
+     * already spoken for, which is the property that matters - a peripheral
+     * window silently placed somewhere else would leave the firmware reading
+     * unmapped memory at the address it actually uses.
+     *
+     * The base is rounded down to the 64 KB allocation granularity by
+     * Windows, and all three regions here are granularity-aligned already.
+     */
+    void *p = VirtualAlloc((LPVOID)r.base, r.len, MEM_RESERVE | MEM_COMMIT,
+                           PAGE_READWRITE);
+    const bool failed = (p == NULL || (uintptr_t)p != r.base);
+    if (failed) {
+      if (p) VirtualFree(p, 0, MEM_RELEASE);
+      if (!r.required) {
+        fprintf(stderr, "[okemu] note: %s at %#llx unavailable (err %lu) - skipped\n",
+                r.name, (unsigned long long)r.base, GetLastError());
+        continue;
+      }
+      g_map_status = (int)GetLastError();
+      if (g_map_status == 0) g_map_status = -2;
+      snprintf(g_map_error, sizeof g_map_error,
+               "cannot map %s at %#llx: Windows error %lu",
+               r.name, (unsigned long long)r.base, GetLastError());
+      return;
+    }
+#else
     void *p = mmap((void *)r.base, r.len, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
     if (p == MAP_FAILED || (uintptr_t)p != r.base) {
@@ -175,6 +393,7 @@ void okemu_map_peripherals(void) {
                strerror(errno));
       return;
     }
+#endif
   }
 
   /*
@@ -225,7 +444,11 @@ static void stream_emit(const uint8_t *data, size_t len, int iface, int dir) {
 
 int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
   g.dir = storage_dir ? storage_dir : ".";
+#ifdef _WIN32
+  _mkdir(g.dir.c_str());
+#else
   mkdir(g.dir.c_str(), 0700);
+#endif
 
   /* 1. peripheral windows ---------------------------------------------
    * Already done by okemu_map_peripherals() during module load; here we only
@@ -258,6 +481,60 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
    */
   bool low_mapped = true;
   size_t off = 0;
+
+#ifdef _WIN32
+  /*
+   * No fallback walk here, deliberately. On Linux the base is 0 and how low
+   * the mapping can start depends on vm.mmap_min_addr, so the code tries
+   * progressively higher offsets and reports which rung it got. Windows has
+   * no such dial: the low 64 KB is reserved unconditionally, which is why
+   * OKEMU_FLASH_BASE is 0x10000 here and the firmware's own address constants
+   * are shifted to match (see stage.js). Either that one address is available
+   * or it is not, and there is no partial success worth reporting.
+   *
+   * MapViewOfFileEx rather than VirtualAlloc because this mapping is
+   * file-backed: writes must reach flash.bin so device state survives a
+   * restart. The base and the file offset both have to be multiples of the
+   * 64 KB allocation granularity - 0x10000 and 0 respectively, so both hold.
+   */
+  HANDLE fh = (HANDLE)_get_osfhandle(g.flash_fd);
+  if (fh == INVALID_HANDLE_VALUE) {
+    snprintf(err, errlen, "flash.bin has no OS handle");
+    return -1;
+  }
+
+  /*
+   * Widen before shifting. OKEMU_FLASH_SIZE is a UL literal, and long is 32
+   * bits on Windows, so `>> 32` is undefined behaviour rather than zero -
+   * clang folded it to the value itself, which asked for a 0x40000_00040000
+   * byte section and came back ERROR_NOT_ENOUGH_MEMORY (8).
+   */
+  const uint64_t map_size = (uint64_t)OKEMU_FLASH_SIZE;
+  g.flash_map = CreateFileMappingW(fh, NULL, PAGE_READWRITE,
+                                   (DWORD)(map_size >> 32),
+                                   (DWORD)(map_size & 0xFFFFFFFFull),
+                                   NULL);
+  if (!g.flash_map) {
+    snprintf(err, errlen, "CreateFileMapping(flash.bin) failed: %lu",
+             GetLastError());
+    return -1;
+  }
+
+  void *fp = MapViewOfFileEx(g.flash_map, FILE_MAP_ALL_ACCESS, 0, 0,
+                             OKEMU_FLASH_SIZE, (LPVOID)OKEMU_FLASH_BASE);
+  if (!fp || (uintptr_t)fp != OKEMU_FLASH_BASE) {
+    DWORD e = GetLastError();
+    if (fp) UnmapViewOfFile(fp);
+    CloseHandle(g.flash_map);
+    g.flash_map = NULL;
+    snprintf(err, errlen,
+             "cannot map flash at %#llx: Windows error %lu. Something else "
+             "holds that range - the peripheral windows are reserved during "
+             "module load, so this is usually an address-space collision.",
+             (unsigned long long)OKEMU_FLASH_BASE, e);
+    return -1;
+  }
+#else
   void *fp = mmap((void *)OKEMU_FLASH_BASE, OKEMU_FLASH_SIZE,
                   PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED_NOREPLACE,
                   g.flash_fd, 0);
@@ -309,13 +586,14 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
               (unsigned long)off);
     }
   }
+#endif  /* _WIN32 */
   g.flash = (uint8_t *)OKEMU_FLASH_BASE;
   g.flash_mapped_off = off;
 
   /* 3. EEPROM --------------------------------------------------------- */
   g.eeprom_fd = open_backing(g.dir, "eeprom.bin", OKEMU_EEPROM_SIZE, 0xFF, e2, sizeof e2);
   if (g.eeprom_fd < 0) { snprintf(err, errlen, "%s", e2); return -1; }
-  if (pread(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0) != OKEMU_EEPROM_SIZE)
+  if (pread_at(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0) != OKEMU_EEPROM_SIZE)
     memset(g.eeprom, 0xFF, OKEMU_EEPROM_SIZE);
 
   /*
@@ -361,8 +639,7 @@ void okemu_systick_start(void) {
   g_systick_thread = std::thread([] {
     while (g_systick_run.load(std::memory_order_relaxed)) {
       okemu_sync_systick();
-      struct timespec t = { 0, 500000L };   /* 500 us - twice SysTick's rate */
-      nanosleep(&t, NULL);
+      sleep_us(500);                        /* twice SysTick's 1 kHz rate */
     }
   });
 }
@@ -372,18 +649,38 @@ void okemu_systick_stop(void) {
   if (g_systick_thread.joinable()) g_systick_thread.join();
 }
 
+/* Push the flash view's dirty pages to disk. */
+static void flash_sync(void) {
+  if (!g.flash) return;
+  void *base = (void *)(OKEMU_FLASH_BASE + g.flash_mapped_off);
+  size_t len = OKEMU_FLASH_SIZE - g.flash_mapped_off;
+#ifdef _WIN32
+  /* FlushViewOfFile queues the write; FlushFileBuffers is what makes it
+   * durable, and durability is the point - this runs on the path where the
+   * firmware has just asked to reboot. */
+  FlushViewOfFile(base, len);
+  if (g.flash_fd >= 0) {
+    HANDLE fh = (HANDLE)_get_osfhandle(g.flash_fd);
+    if (fh != INVALID_HANDLE_VALUE) FlushFileBuffers(fh);
+  }
+#else
+  msync(base, len, MS_SYNC);
+#endif
+}
+
 void okemu_hal_shutdown(void) {
   okemu_systick_stop();
   if (g.eeprom_fd >= 0) {
-    pwrite(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0);
-    ::close(g.eeprom_fd);
+    pwrite_at(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0);
+    okemu_close(g.eeprom_fd);
     g.eeprom_fd = -1;
   }
-  if (g.flash) {
-    msync((void *)(OKEMU_FLASH_BASE + g.flash_mapped_off),
-          OKEMU_FLASH_SIZE - g.flash_mapped_off, MS_SYNC);
-  }
-  if (g.flash_fd >= 0) { ::close(g.flash_fd); g.flash_fd = -1; }
+  flash_sync();
+#ifdef _WIN32
+  if (g.flash) { UnmapViewOfFile((LPCVOID)OKEMU_FLASH_BASE); g.flash = nullptr; }
+  if (g.flash_map) { CloseHandle(g.flash_map); g.flash_map = NULL; }
+#endif
+  if (g.flash_fd >= 0) { okemu_close(g.flash_fd); g.flash_fd = -1; }
 }
 
 void okemu_factory_reset(void) {
@@ -391,11 +688,10 @@ void okemu_factory_reset(void) {
   if (g.flash) {
     memset((void *)(OKEMU_FLASH_BASE + g.flash_mapped_off), 0xFF,
            OKEMU_FLASH_SIZE - g.flash_mapped_off);
-    msync((void *)(OKEMU_FLASH_BASE + g.flash_mapped_off),
-          OKEMU_FLASH_SIZE - g.flash_mapped_off, MS_SYNC);
+    flash_sync();
   }
   memset(g.eeprom, 0xFF, OKEMU_EEPROM_SIZE);
-  if (g.eeprom_fd >= 0) pwrite(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0);
+  if (g.eeprom_fd >= 0) pwrite_at(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0);
   g.restart = true;
 }
 
@@ -410,10 +706,7 @@ void okemu_time_start(void) { g.t0_us = now_us(); }
 uint32_t okemu_micros(void) { return (uint32_t)(now_us() - g.t0_us); }
 
 void okemu_delay_ms(uint32_t ms) {
-  struct timespec ts;
-  ts.tv_sec  = ms / 1000;
-  ts.tv_nsec = (long)(ms % 1000) * 1000000L;
-  nanosleep(&ts, nullptr);
+  sleep_us((uint64_t)ms * 1000ULL);
   okemu_sync_systick();
 }
 
@@ -591,7 +884,7 @@ void okemu_eeprom_write(uint32_t addr, uint8_t v) {
   std::lock_guard<std::mutex> lk(g.mu);
   if (g.eeprom[addr] == v) return;
   g.eeprom[addr] = v;
-  if (g.eeprom_fd >= 0) pwrite(g.eeprom_fd, &v, 1, (off_t)addr);
+  if (g.eeprom_fd >= 0) pwrite_at(g.eeprom_fd, &v, 1, addr);
 }
 
 /* ----------------------------------------------------------- entropy */
