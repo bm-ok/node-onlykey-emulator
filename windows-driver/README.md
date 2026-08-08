@@ -76,6 +76,41 @@ does on Linux by unbinding the UDC.
 
 ---
 
+## Ecosystem compatibility
+
+The point of a HID driver rather than something simpler is that real clients
+find the device through hidapi and identify it by fields only a real USB device
+normally carries. On Linux this is exactly where the UHID bridge falls down -
+hidapi reports manufacturer `''` and interface `-1` for a UHID device, which no
+unmodified client can match, and it is why `gadget-bridge.js` exists.
+
+This driver clears that bar. Measured with real hidapi, running
+python-onlykey's own `client.py::_connect` selection:
+
+```
+1d50:60fc  serial='1000000000'  iface=-1  usage_page=0xffab  usage=0x0002
+    manufacturer='CRYPTOTRUST'  product='ONLYKEY'
+-> vendor branch selected, opened, device answered 'INITIALIZED'
+```
+
+Two caveats worth knowing before relying on it.
+
+**`interface_number` is -1.** hidapi derives it from the `&MI_xx` component of
+the device path, which only a real USB composite device has; these are
+root-enumerated and have no such component. python-onlykey is unaffected
+because its test is `usage_page == 0xffab **or** interface_number == 2` and the
+usage page carries it — but a client that checks `interface_number` alone will
+not find this device. That is the one respect in which this is less faithful
+than the Linux gadget bridge, and it is structural rather than a bug to fix:
+short of emulating a USB bus, nothing here can produce an `&MI_xx` path.
+
+**The FIDO collection does not appear to unelevated callers.** Windows returns
+ACCESS_DENIED on it for non-admin processes, so hidapi silently omits it from
+`enumerate()`. A real security key behaves identically — it is evidence Windows
+classified the device correctly, not a defect. Browsers reach it through the
+WebAuthn service; a client wanting the raw FIDO interface needs elevation, on
+this device and on real hardware alike.
+
 ## The transport, and why it is a pipe
 
 The obvious design is a private device interface and `DeviceIoControl`. That
