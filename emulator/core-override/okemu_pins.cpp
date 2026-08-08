@@ -14,6 +14,21 @@
 #include <stdint.h>
 #include <time.h>
 #include <stdlib.h>
+
+/*
+ * Deliberately not <thread>/<chrono>. This target is compiled as gnu++11 -
+ * the firmware is C++11 code and raising it changes language rules it relies
+ * on - and the MSVC STL requires C++17 or newer, so pulling <chrono> in here
+ * fails inside <ctime> with a wall of "no member named 'clock_t' in the
+ * global namespace". The sleep below is two lines either way; the standard
+ * library is not worth that.
+ */
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#endif
+
 #include "ok_hal.h"
 
 extern "C" {
@@ -61,8 +76,26 @@ uint32_t micros(void) {
   uint32_t now = okemu_micros();
 
   if (now - last_us < OKEMU_MICROS_THROTTLE_US) {
+    /*
+     * Windows has no nanosleep, and its scheduler tick is ~15.6 ms by
+     * default, so a 250 us request sleeps for roughly one tick instead.
+     *
+     * That is fine, and worth saying why rather than reaching for
+     * timeBeginPeriod: this sleep exists to stop SoftTimer's busy-wait
+     * pegging a core, not to time anything. Oversleeping costs poll rate only
+     * while the firmware has nothing to do, because the sleep is skipped
+     * entirely whenever real time has advanced - so a caller genuinely
+     * waiting out an interval still runs at full speed. The effective poll
+     * rate becomes ~64 Hz rather than ~4 kHz, still far inside the 50 ms task
+     * period. Raising the system timer resolution to buy back the difference
+     * would be a machine-wide side effect for an emulator's idle loop.
+     */
+#ifdef _WIN32
+    Sleep(OKEMU_MICROS_THROTTLE_US / 1000u + 1u);
+#else
     struct timespec idle = { 0, OKEMU_MICROS_THROTTLE_US * 1000L };
     nanosleep(&idle, NULL);
+#endif
     now = okemu_micros();
   }
   last_us = now;

@@ -131,6 +131,15 @@ const DROP = [
  *         over anything predefined from outside - okemu_prelude.h and -D both
  *         lose to it. Patching the staged copy is the only lever there is.
  *
+ *     core/Print.cpp
+ *         Also vendored Teensy core. Print::printf passes `(int)this` as a
+ *         file descriptor, which truncates a 64-bit pointer; on Linux glibc's
+ *         vdprintf then writes to a garbage fd and every Serial.printf()
+ *         silently vanishes, and on Windows there is no vdprintf to call.
+ *         Redirected to okemu_vdprintf(), which keeps the pointer and goes
+ *         through Print::write. Same "core must not learn about the emulator"
+ *         reasoning, so there is no gate to promote it to either.
+ *
  *   PROVISIONAL Being proved out here before it lands in firmware. Promote to
  *               an `#ifdef OK_EMULATOR` gate once built and tested, then
  *               delete the entry. If one of these is still here in six
@@ -190,6 +199,7 @@ const DROP = [
 const WINDOWS_FLASH_PATCH = {
   file: 'libraries/onlykey/okcore.h',
   status: 'provisional',
+  platform: 'win32',
   note: 'Windows flash shift. Promote to an OK_EMULATOR/_WIN32 gate in '
       + 'okcore.h once a Windows build has been proved out.',
   edits: [
@@ -223,10 +233,143 @@ const PATCHES = [
     ],
   },
 
-  /* Windows only - see the comment on WINDOWS_FLASH_PATCH. Conditional because
-   * on Linux the flash maps at its real base, and shifting the constants there
-   * would move the firmware off its own storage. */
-  ...(process.platform === 'win32' ? [WINDOWS_FLASH_PATCH] : []),
+  {
+    file: 'libraries/uECC/uECC.c',
+    status: 'provisional',
+    note: 'uECC_point_mult is called before it is declared. Promote as an '
+        + 'unconditional fix in uECC.c - a missing prototype is a bug on '
+        + 'every target, not a Windows one.',
+    edits: [
+      /*
+       * uECC_shared_secret2() calls uECC_point_mult() eleven lines before the
+       * definition, and the only declaration lives in uECC_vli.h behind
+       * `#if uECC_ENABLE_VLI_API`, which defaults to 0 and is set nowhere in
+       * this tree. So the call sees no prototype at all.
+       *
+       * C89 let that slide as an implicit `int uECC_point_mult()`, and GCC
+       * still only warns - which the POSIX build's -w hides. clang stops on
+       * it twice: once for the implicit declaration, and again because the
+       * implicit `int` return conflicts with the real `void` definition. The
+       * second one is not a warning and no -Wno- flag silences it.
+       *
+       * Note the function name: uECC_shared_secret2 is an OnlyKey addition
+       * rather than upstream micro-ecc, which is presumably how it was
+       * written against an API that is compiled out.
+       *
+       * Unconditional rather than Windows-gated, because a call with no
+       * visible prototype is wrong everywhere. Declaring it is what upstream
+       * should do; this is the staged stand-in until it does.
+       *
+       * PROVISIONAL - see the rule above. This wants to become a real
+       * declaration in uECC.c, at which point this entry goes away.
+       */
+      ['int uECC_shared_secret2(const uint8_t *public_key,',
+       '/* Declared here because uECC_vli.h only declares it under\n'
+       + ' * uECC_ENABLE_VLI_API, which is 0. Added by the emulator\'s stage\n'
+       + ' * patch - see emulator/scripts/stage.js. */\n'
+       + 'void uECC_point_mult(uECC_word_t *result,\n'
+       + '                     const uECC_word_t *point,\n'
+       + '                     const uECC_word_t *scalar,\n'
+       + '                     uECC_Curve curve);\n'
+       + '\n'
+       + 'int uECC_shared_secret2(const uint8_t *public_key,'],
+    ],
+  },
+
+  {
+    file: 'core/Print.h',
+    status: 'permanent',
+    platform: 'win32',
+    note: 'Vendored Teensy core. Adds long long overloads so uintptr_t and '
+        + 'size_t are not ambiguous on LLP64, where unsigned long is 32-bit.',
+    edits: [
+      /*
+       * Windows is LLP64: `long` is 32 bits and pointers are 64. Linux is
+       * LP64, where `long` is 64 bits.
+       *
+       * Print's integer overload set stops at `unsigned long`. On Linux that
+       * happens to be an exact match for uintptr_t and size_t, so
+       * `Serial.println(adr, HEX)` resolves cleanly. On Windows there is no
+       * exact match and every candidate - int, unsigned int, long, unsigned
+       * long, double - is an equally ranked conversion, so the call is
+       * ambiguous. okcore.cpp and okcrypto.cpp hit this a dozen times, all in
+       * DEBUG traces printing addresses and lengths.
+       *
+       * Adding exact matches for the 64-bit types fixes every such call site
+       * at once, including ones not written yet, which casting at each site
+       * would not.
+       *
+       * They delegate to the 32-bit path, so a value above 2^32 would be
+       * truncated in debug output. That is acceptable and bounded here: every
+       * current caller passes a flash address inside a 256 KB map or a key
+       * length, and both are far below the limit. It is called out rather
+       * than hidden because on Linux the same call prints the full 64 bits.
+       *
+       * PERMANENT. Print.h is vendored Teensy code and must not learn about
+       * the emulator, so there is no OK_EMULATOR gate to promote this to.
+       */
+      ['\tsize_t print(unsigned long n, int base)\t\t{ return printNumber(n, base, 0); }',
+       '\tsize_t print(unsigned long n, int base)\t\t{ return printNumber(n, base, 0); }\n'
+       + '\n'
+       + '\t/* LLP64 hosts: uintptr_t/size_t are long long, not long. Added by\n'
+       + '\t * the emulator\'s stage patch - see emulator/scripts/stage.js. */\n'
+       + '\tsize_t print(long long n)\t\t\t{ return print((long)n); }\n'
+       + '\tsize_t print(unsigned long long n)\t\t{ return print((unsigned long)n); }\n'
+       + '\tsize_t print(long long n, int base)\t\t{ return print((long)n, base); }\n'
+       + '\tsize_t print(unsigned long long n, int base)\t{ return print((unsigned long)n, base); }'],
+
+      ['\tsize_t println(unsigned long n, int base)\t{ return print(n, base) + println(); }',
+       '\tsize_t println(unsigned long n, int base)\t{ return print(n, base) + println(); }\n'
+       + '\n'
+       + '\tsize_t println(long long n)\t\t\t{ return print(n) + println(); }\n'
+       + '\tsize_t println(unsigned long long n)\t\t{ return print(n) + println(); }\n'
+       + '\tsize_t println(long long n, int base)\t\t{ return print(n, base) + println(); }\n'
+       + '\tsize_t println(unsigned long long n, int base)\t{ return print(n, base) + println(); }'],
+    ],
+  },
+
+  {
+    file: 'core/Print.cpp',
+    status: 'permanent',
+    note: 'Vendored Teensy core. Print::printf passes `(int)this` as a file '
+        + 'descriptor, which truncates a 64-bit pointer. Redirected to '
+        + 'okemu_vdprintf() with the pointer intact.',
+    edits: [
+      /*
+       * Teensyduino writes Print::printf as
+       *
+       *     return vdprintf((int)this, format, ap);
+       *
+       * with a weak `_write(int file, ...)` just above it that casts the
+       * "descriptor" back to a Print *. On the device that round-trips
+       * through newlib's stdio and works, because sizeof(int) equals
+       * sizeof(void *) there.
+       *
+       * On a 64-bit host it truncates the pointer. Linux then reaches glibc's
+       * vdprintf, which knows nothing about _write and treats the truncated
+       * value as a real descriptor - so the write fails with EBADF and every
+       * Serial.printf() in the firmware disappears, silently. Windows has no
+       * vdprintf in its CRT at all, which is how this surfaced.
+       *
+       * Unconditional, not Windows-gated: the truncation is wrong on every
+       * 64-bit host, so this is a correction rather than a portability shim.
+       * See core-override/okemu_printf.cpp.
+       *
+       * PERMANENT. Print.cpp is vendored Teensy code, not OnlyKey code, so it
+       * must not learn about the emulator - there is no OK_EMULATOR gate to
+       * promote this to.
+       */
+      ['return vdprintf((int)this, format, ap);',
+       'return okemu_vdprintf((void *)this, format, ap);'],
+      ['return vdprintf((int)this, (const char *)format, ap);',
+       'return okemu_vdprintf((void *)this, (const char *)format, ap);'],
+    ],
+  },
+
+  /* Windows only via its `platform` field: on Linux the flash maps at its
+   * real base, and shifting the constants there would move the firmware off
+   * its own storage. */
+  WINDOWS_FLASH_PATCH,
 ];
 
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
@@ -247,6 +390,9 @@ function applyPatches() {
   const provisional = [];
 
   for (const p of PATCHES) {
+    /* Host-specific entries. No `platform` means every host. */
+    if (p.platform && p.platform !== process.platform) continue;
+
     /*
      * An entry with no status predates the register, or was added without
      * one. Treat that as provisional rather than permanent: the failure mode

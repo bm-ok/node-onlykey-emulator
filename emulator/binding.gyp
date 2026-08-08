@@ -124,7 +124,21 @@
                 "-fno-strict-aliasing",
                 "-fwrapv",
                 "-std=gnu++11",
-                "-Wno-everything"
+                "-Wno-everything",
+                # uECC.c calls uECC_point_mult() eleven lines before defining
+                # it, and its declaration lives in uECC_vli.h, which that
+                # translation unit does not include. C89 allowed the implicit
+                # declaration; GCC still only warns, so the POSIX build's -w
+                # hides it. clang 16 promoted it to an error, and -Wno-everything
+                # does not cover errors.
+                #
+                # Restoring the GCC behaviour keeps Windows consistent with the
+                # build that already ships rather than making it uniquely
+                # strict. It is a latent issue in uECC either way - the call
+                # site and the definition happen to agree - and the real fix is
+                # for uECC.c to include its own header, which is firmware.
+                "-Wno-implicit-function-declaration",
+                "-Wno-error=implicit-function-declaration"
               ]
             }
           },

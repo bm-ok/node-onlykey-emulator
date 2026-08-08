@@ -22,6 +22,31 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdarg.h>
+/*
+ * <stdio.h> is here for mbedtls. platform.cpp includes only config.h and
+ * platform.h, then calls _vsnprintf_s() inside `#if defined(_TRUNCATE)`. The
+ * MSVC CRT defines _TRUNCATE in <stdlib.h>, so that branch is taken, but
+ * declares _vsnprintf_s in <stdio.h>, which nothing there includes - so it
+ * compiles everywhere else and fails only on Windows. Linux never takes the
+ * branch, because glibc has no _TRUNCATE.
+ */
+#include <stdio.h>
+
+/*
+ * Print::printf's replacement. Declared here rather than in a header the core
+ * includes, because the call sites are in the vendored Print.cpp and are
+ * redirected by a staged patch - see scripts/stage.js and
+ * core-override/okemu_printf.cpp for why the original cannot work on a 64-bit
+ * host.
+ *
+ * void * rather than Print *: this header is force-included into C
+ * translation units too, where Print does not exist.
+ */
+#ifdef __cplusplus
+extern "C"
+#endif
+int okemu_vdprintf(void *print_obj, const char *format, va_list ap);
 
 /*
  * TimeLib.h opens with
@@ -49,6 +74,58 @@
 #ifdef _WIN32
 #define __time_t_defined 1
 #endif
+
+/*
+ * Two more things glibc supplies that the MSVC CRT does not. Both are pure
+ * hosting artifacts - the firmware is correct on its own toolchain, and
+ * neither belongs in the OnlyKey sources.
+ */
+#ifdef _WIN32
+
+/*
+ * `uint`. A BSD spelling that glibc's <sys/types.h> exposes under __USE_MISC
+ * and the MSVC CRT has never had. T3Mac.cpp uses it for a loop counter.
+ */
+typedef unsigned int uint;
+
+/*
+ * `ssize_t`. POSIX, from <unistd.h>, which the MSVC CRT does not have.
+ * tinycbor's open_memstream.c guards its own include with
+ * `#if defined(__unix__) || defined(__APPLE__)` and then uses the type
+ * unconditionally, so on Windows nothing declares it.
+ *
+ * Signed 64-bit to match the pointer width, which is what SSIZE_T in
+ * <BaseTsd.h> is - declared here rather than dragging in a Windows header.
+ */
+#ifndef _SSIZE_T_DEFINED
+#define _SSIZE_T_DEFINED
+typedef long long ssize_t;
+#endif
+
+/*
+ * `_Bool` in C++. glibc's <stdbool.h> carries a C++ branch that reads
+ *
+ *     #if defined __cplusplus
+ *     // Supporting <stdbool.h> in C++ is a GCC extension.
+ *     # define _Bool bool
+ *
+ * so a C header using _Bool keeps working when included from C++. MSVC's
+ * <stdbool.h> has no such branch, and _Bool is a C keyword that does not
+ * exist in C++ - so fido2/ctap.h fails on two struct members that are
+ * perfectly legal everywhere else.
+ *
+ * Defining it exactly the way glibc does, rather than editing the header, is
+ * the point: this is replicating a platform's behaviour, not changing the
+ * firmware's.
+ */
+#ifdef __cplusplus
+#include <stdbool.h>
+#ifndef _Bool
+#define _Bool bool
+#endif
+#endif
+
+#endif /* _WIN32 */
 
 /* Teensy's random()/srandom() -> distinct names, away from glibc's. */
 #define random  teensy_random
