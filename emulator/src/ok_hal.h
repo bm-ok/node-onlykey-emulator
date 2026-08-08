@@ -25,8 +25,50 @@ extern "C" {
 
 /* ---------------------------------------------------------------- layout */
 
+/*
+ * Where the 256 KB flash array is mapped.
+ *
+ * On Linux this is the MK20DX256's real base, zero, so the firmware's own
+ * `*(unsigned int *)adr` reads land exactly where they would on the device.
+ * Reaching that low needs vm.mmap_min_addr at 4096 - see setup-permissions.sh,
+ * and README's note on why 4096 rather than 0.
+ *
+ * Windows cannot do it at all. The low 64 KB of user address space is
+ * permanently reserved as the null-pointer partition, there is no
+ * mmap_min_addr equivalent to lower, and MapViewOfFileEx additionally requires
+ * a base aligned to the 64 KB allocation granularity rather than the page. So
+ * the whole map is shifted up by exactly one granule.
+ *
+ * This constant is one half of a pair. The other is the WINDOWS_FLASH_PATCH
+ * entry in scripts/stage.js, which shifts the firmware's four flash address
+ * roots by the same amount in the STAGED copy. They must agree: this says
+ * where the memory is, that says where the firmware looks for it, and a
+ * mismatch puts every flash access outside the mapping.
+ *
+ * Shifting all of them together is what makes it safe - every flash address in
+ * the firmware derives from those four roots, so all relative offsets are
+ * preserved. Without it, certified_hw at 0x5BB0, which
+ * okcrypto_split_sundae() dereferences on every AES-GCM operation, would be
+ * unmappable, and the device would boot, enumerate and answer HID perfectly
+ * before segfaulting on the first thing it encrypted.
+ *
+ * Anything comparing a flash address against an absolute literal has to be
+ * written relative to this. okemu_flash.cpp is the only such place.
+ */
+#ifdef _WIN32
+#define OKEMU_FLASH_BASE   0x00010000UL   /* one Windows allocation granule */
+#else
 #define OKEMU_FLASH_BASE   0x00000000UL
+#endif
+
 #define OKEMU_FLASH_SIZE   0x00040000UL   /* 256 KB - MK20DX256 */
+
+/* How far the staged okcore.h's address roots move to match. Zero where
+ * the flash is mapped at its real base, so the gate is inert off Windows. */
+#define OKEMU_FLASH_SHIFT  OKEMU_FLASH_BASE
+
+/* One past the last mapped flash byte. */
+#define OKEMU_FLASH_END    (OKEMU_FLASH_BASE + OKEMU_FLASH_SIZE)
 #define OKEMU_EEPROM_SIZE  2048           /* Teensy 3.1 emulated EEPROM     */
 
 /* MK20DX256 has 6 touch-sensed buttons; firmware numbers them 1..6. */

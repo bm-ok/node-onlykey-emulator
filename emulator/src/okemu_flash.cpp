@@ -24,12 +24,22 @@
 
 namespace {
 
-/* The MK20DX256's first sector holds the reset vectors and flash config
- * field; the library refuses to touch it unless explicitly overridden. */
-const unsigned long kFirstSectorEnd = FLASH_SECTOR_SIZE;
+/*
+ * The MK20DX256's first sector holds the reset vectors and flash config
+ * field; the library refuses to touch it unless explicitly overridden.
+ *
+ * Written relative to OKEMU_FLASH_BASE rather than as the bare 0x800 it is on
+ * the device. The base is zero everywhere except Windows, where the low 64 KB
+ * of address space is unmappable and the whole flash map is shifted up by one
+ * allocation granule (see ok_hal.h). Left absolute, this guard would compare
+ * shifted addresses against an unshifted bound: every address would sit above
+ * it, and the first-sector protection would silently stop protecting anything.
+ */
+const uintptr_t kFirstSectorEnd =
+    (uintptr_t)OKEMU_FLASH_BASE + FLASH_SECTOR_SIZE;
 
 inline bool in_flash(uintptr_t a) {
-  return a < (uintptr_t)OKEMU_FLASH_SIZE;
+  return a >= (uintptr_t)OKEMU_FLASH_BASE && a < (uintptr_t)OKEMU_FLASH_END;
 }
 
 volatile uint8_t *ftfl_fsec() { return (volatile uint8_t *)0x40020002UL; }  /* kinetis.h:2350 */
@@ -82,7 +92,7 @@ void flashSetFlexRAM(void) {
 }
 
 unsigned long flashFirstEmptySector(void) {
-  for (uintptr_t a = kFirstSectorEnd; a < (uintptr_t)OKEMU_FLASH_SIZE;
+  for (uintptr_t a = kFirstSectorEnd; a < (uintptr_t)OKEMU_FLASH_END;
        a += FLASH_SECTOR_SIZE) {
     if (flashCheckSectorErased((unsigned long *)a) == 0) return (unsigned long)a;
   }
