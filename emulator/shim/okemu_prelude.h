@@ -23,6 +23,33 @@
 #include <math.h>
 #include <stdint.h>
 
+/*
+ * TimeLib.h opens with
+ *
+ *     #if !defined(__time_t_defined)   // avoid conflict with newlib or other posix libc
+ *     typedef unsigned long time_t;
+ *     #endif
+ *
+ * and that guard is a glibc/newlib spelling. glibc defines it, so on Linux the
+ * typedef is skipped and the emulator has always used the platform's time_t.
+ * The MSVC CRT does not define it under any name TimeLib knows, so the typedef
+ * fires and collides with <time.h>'s - C2371, redefinition with a different
+ * basic type, on the first translation unit that pulls both in.
+ *
+ * Declaring it here makes Windows behave the way Linux already does. This is
+ * not a behaviour change dressed up as a portability fix: on the device
+ * `unsigned long` is 32 bits, but the hosted Linux build has been using
+ * glibc's 64-bit time_t all along, so matching that is what keeps the two
+ * hosted platforms identical to each other.
+ *
+ * It belongs here rather than in TimeLib.h because TimeLib is a stock Arduino
+ * library under onlykey/, and the collision is an artifact of hosting rather
+ * than something the firmware owns.
+ */
+#ifdef _WIN32
+#define __time_t_defined 1
+#endif
+
 /* Teensy's random()/srandom() -> distinct names, away from glibc's. */
 #define random  teensy_random
 #define srandom teensy_srandom

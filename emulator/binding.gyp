@@ -93,6 +93,59 @@
         ["OS=='linux'", {
           "cflags+": ["-fno-strict-aliasing", "-fwrapv"],
           "cflags_cc+": ["-fno-strict-aliasing", "-fwrapv"]
+        }],
+
+        # ------------------------------------------------------------------
+        # Windows.
+        #
+        # None of the cflags above apply here: gyp only emits cflags/cflags_cc
+        # for the make and ninja generators, so on the msvs generator every
+        # one of them - including the forced include of okemu_prelude.h - is
+        # silently dropped. That is not a warning, it is a no-op, and the
+        # first symptom is TimeLib.h redefining time_t because the prelude
+        # that would have prevented it was never included.
+        #
+        # ForcedIncludeFiles is the MSVC spelling of -include. The path
+        # resolves through include_dirs, where shim/ is already first.
+        # ------------------------------------------------------------------
+        ["OS=='win'", {
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "ForcedIncludeFiles": ["okemu_prelude.h"],
+              # The firmware is 2015-era Arduino C++ and warns constantly.
+              # This is the -w the POSIX side passes.
+              "WarningLevel": "0",
+              "SuppressStartupBanner": "true",
+              # /EHsc. The firmware itself does not throw, but the staged
+              # tree includes C++ standard headers that require unwinding
+              # semantics to be declared.
+              "ExceptionHandling": "1",
+              "AdditionalOptions": [
+                "-fno-strict-aliasing",
+                "-fwrapv",
+                "-std=gnu++11",
+                "-Wno-everything"
+              ]
+            }
+          },
+          # clang-cl, not MSVC. The firmware is GCC-flavoured C++:
+          # __attribute__ appears over 170 times - always_inline, packed,
+          # aligned, weak - plus GCC inline assembly, and cl.exe has no
+          # concept of any of it. Measured, not assumed: every probe
+          # translation unit dies on the first __attribute__ it reaches, in a
+          # header, before compiling a line of real code.
+          #
+          # Neutralising __attribute__ with a macro is not an option either:
+          # `packed` is load-bearing on the USB descriptor structs, so
+          # dropping it changes struct layout and yields descriptors that are
+          # subtly wrong rather than a compile error.
+          #
+          # clang-cl understands the GNU extensions and still emits MSVC-ABI
+          # objects, which is what lets the result link into Node.
+          #
+          # Needs the "C++ Clang Compiler for Windows" and "MSBuild support
+          # for LLVM (clang-cl) toolset" components - see SETUP.md.
+          "msbuild_toolset": "ClangCL"
         }]
       ]
     },
@@ -112,6 +165,39 @@
       "cflags_cc": ["-std=gnu++17", "-fexceptions"],
       "cflags_cc!": ["-fno-exceptions", "-fno-rtti"],
 
+      "conditions": [
+        # Same toolset as the firmware static library it links against.
+        # Mixing ClangCL and MSVC across the two would probably work - both
+        # target the MSVC ABI - but "probably" is not a good property for a
+        # link step, and a mismatch surfaces as unresolved symbols rather
+        # than as anything that names the cause.
+        #
+        # No ForcedIncludeFiles here: okemu_prelude.h is for the firmware,
+        # and it renames random()/srandom(), which addon.cpp has no reason to
+        # inherit. The POSIX side keeps the same split - the prelude is on
+        # the firmware target's cflags, not in target_defaults.
+        ["OS=='win'", {
+          "msbuild_toolset": "ClangCL",
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "ExceptionHandling": "1",
+              "WarningLevel": "3"
+              #
+              # Deliberately no -std here, unlike the POSIX side's gnu++17.
+              # node-gyp's common.gypi already passes -std:c++20, and Node 24's
+              # own headers want it; overriding downwards on the target that
+              # actually includes node.h is how you get template errors deep
+              # inside V8 that have nothing to do with this code. C++20 is a
+              # superset of what addon.cpp needs, so there is nothing to gain
+              # by forcing it back.
+              #
+              # The firmware target is the opposite case: it includes no Node
+              # headers and genuinely needs gnu++11, so it overrides there.
+            }
+          }
+        }]
+      ],
+
       # -Bsymbolic: bind the firmware's internal calls to its OWN definitions.
       #
       # The firmware was written for a freestanding target where the only code
@@ -126,6 +212,11 @@
       #
       # -Bsymbolic resolves defined symbols within this module and leaves
       # undefined ones (the N-API entry points, libc) alone.
+      #
+      # Nothing to port to Windows here, and nothing missing. gyp drops
+      # ldflags on the msvs generator, and the problem this solves does not
+      # exist there: the PE loader has no global symbol interposition, so a
+      # firmware symbol named recvmsg cannot be captured by anyone else's.
       "ldflags": ["-Wl,-Bsymbolic", "-rdynamic"]
     }
   ]
