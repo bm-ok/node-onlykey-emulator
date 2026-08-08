@@ -15,9 +15,12 @@
  * scripts/setup-permissions.sh; if it is missing we run without a real HID
  * device and say so, rather than failing to start.
  *
- * The transport defaults to the USB gadget (dummy_hcd + f_hid), which is the
- * only one that presents the USB descriptor fields real software identifies an
- * OnlyKey by. OKEMU_BRIDGE=uhid selects the older UHID bridge.
+ * On Linux the transport defaults to the USB gadget (dummy_hcd + f_hid), which
+ * is the only one that presents the USB descriptor fields real software
+ * identifies an OnlyKey by. OKEMU_BRIDGE=uhid selects the older UHID bridge.
+ *
+ * On Windows there is one choice, okvhid, because there is only one way to add
+ * a HID device to Windows and that is a driver. See ../../windows-driver.
  *
  * Usage:
  *   node bin/daemon.js [--socket PATH] [--storage DIR] [--no-hid] [--quiet]
@@ -93,8 +96,27 @@ async function main() {
    */
   let bridge = null;
   if (args.uhid) {
-    const kind = process.env.OKEMU_BRIDGE === 'uhid' ? 'uhid' : 'gadget';
-    const mod = kind === 'uhid' ? '../lib/uhid-bridge' : '../lib/gadget-bridge';
+    /*
+     * Windows has no second option. uhid and gadget are both kernel features
+     * it does not have, so OKEMU_BRIDGE is not consulted there - picking a
+     * Linux transport on Windows can only fail, and failing with "run
+     * setup-permissions.sh" would send the reader somewhere that cannot help.
+     */
+    const kind = process.platform === 'win32' ? 'okvhid'
+      : process.env.OKEMU_BRIDGE === 'uhid' ? 'uhid'
+      : 'gadget';
+    const mod = {
+      okvhid: '../lib/okvhid-bridge',
+      uhid: '../lib/uhid-bridge',
+      gadget: '../lib/gadget-bridge',
+    }[kind];
+
+    const HINT = {
+      gadget: '  run  sudo ./scripts/gadget-setup.sh  once to enable it',
+      uhid: '  run  sudo ./scripts/setup-permissions.sh  once to enable it',
+      okvhid: '  build, sign and install the driver once - see windows-driver\\README.md',
+    };
+
     try {
       const Bridge = require(mod);
       bridge = new Bridge(emu);
@@ -106,9 +128,7 @@ async function main() {
       bridge = null;
       ipc.uhid = false;
       log(`${kind} bridge unavailable (${err.message})`);
-      log(kind === 'gadget'
-        ? '  run  sudo ./scripts/gadget-setup.sh  once to enable it'
-        : '  run  sudo ./scripts/setup-permissions.sh  once to enable it');
+      log(HINT[kind]);
       log('  the emulator still works over IPC either way');
     }
   }
