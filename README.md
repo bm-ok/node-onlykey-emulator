@@ -16,9 +16,17 @@ EEPROM that persist across restarts.
 
 ## Requirements
 
-* Linux. The default transport is a **USB gadget** (`dummy_hcd` + `f_hid`), which
-  needs kernel headers and matching kernel source to build one small module —
-  see [Why a USB gadget](#why-a-usb-gadget). A UHID fallback needs neither.
+* **Linux or Windows.** The emulator itself is the same on both; only the way it
+  reaches the OS as a HID device differs. See
+  [Which host, and what it costs](#which-host-and-what-it-costs) — the two are
+  not equivalent, and the differences matter for what you can test.
+  * **Linux** — default transport is a **USB gadget** (`dummy_hcd` + `f_hid`),
+    which needs kernel headers and matching kernel source to build one small
+    module; see [Why a USB gadget](#why-a-usb-gadget). A UHID fallback needs
+    neither.
+  * **Windows** — needs the `okvhid` HID minidriver from
+    [`windows-driver/`](windows-driver/README.md), built and installed once,
+    **and the machine in test-signing mode**.
 * **Node.js 22.22.2+** (or 24.15+, or 26+) and a C++ toolchain
   (`build-essential`, `python3`, `python3-venv`). The floor is not ours: it is
   `node-gyp`'s, via `emulator/package.json` →
@@ -84,6 +92,44 @@ iface=3 usagePage=0xffc9 manufacturer="CRYPTOTRUST" product="ONLYKEY"
 Set `OKEMU_BRIDGE=uhid` to use the old UHID transport instead. It needs no
 kernel module and is fine for HID-plumbing work, but the unmodified test kit
 cannot see it.
+
+---
+
+## Which host, and what it costs
+
+The firmware, the addon and `bin/daemon.js` are identical on both. What differs
+is the transport, and the differences are not cosmetic — they decide which
+tests mean anything.
+
+| | Linux (gadget) | Linux (uhid) | Windows (okvhid) |
+|---|---|---|---|
+| Setup | `sudo ./scripts/setup-permissions.sh` | same | build + sign + install a driver, **and test-signing mode** |
+| Manufacturer / product strings | yes | **no** (empty) | yes |
+| `interface_number` to hidapi | yes | **no** (`-1`) | **no** (`-1`) |
+| Found by python-onlykey | yes | **no** | yes, via usage page |
+| Visible to VirtualBox USB passthrough | yes | no | **no** |
+| WebAuthn in a browser | yes | yes | yes |
+
+Windows sits between the two Linux transports. It clears the bar UHID fails —
+real `CRYPTOTRUST` / `ONLYKEY` / `1000000000` strings, so `python-onlykey`'s
+`client.py::_connect` matches on usage page `0xffab` — but it cannot supply
+`interface_number`, because hidapi reads that from the `&MI_xx` component of a
+USB device path and these devices are root-enumerated. Any client testing
+`interface_number` alone will miss it. That is structural: short of emulating a
+USB bus, nothing in a HID minidriver can produce that path, which is also why
+VirtualBox USB passthrough cannot see the device at all.
+
+**Test-signing mode is a real cost.** `okvhid` is self-signed, so Windows will
+not load it unless `bcdedit /set testsigning on` — which lowers driver
+signature enforcement machine-wide, not for this driver alone. That is
+defensible on a dedicated test box and not on a daily machine. Production
+signing (EV certificate + Microsoft attestation) is the only way off it, and
+the pipe ACL would need tightening first — see
+[`windows-driver/README.md`](windows-driver/README.md).
+
+Two Windows-specific operational notes: the root devices **do not survive a
+reboot** (re-run `install-driver.ps1`), and the FIDO collection is invisible to
+unelevated callers, exactly as a real security key is.
 
 ---
 
@@ -247,6 +293,39 @@ cd emulator
 npm install
 npm run rebuild
 ```
+
+### On Windows instead
+
+Steps 1 and 2 above are Linux-only: `setup.sh` and `setup-permissions.sh` are
+shell scripts, and there is no `/dev/uhid` and no configfs to grant access to.
+Windows needs the driver instead, and the equivalent sequence is:
+
+```powershell
+# 1. sources - clone the components setup.sh would have fetched, into onlykey/
+#    (or copy an existing checkout; nothing here is Windows-specific)
+
+# 2. the driver, once. Elevated. See windows-driver\README.md for detail.
+cd windows-driver
+.\fetch-wdk.ps1                     # WDK from NuGet, no admin
+.\build-direct.ps1                  # clang-cl + lld-link
+.\sign.ps1 -Mode Test               # elevated
+.\install-driver.ps1                # elevated - re-run after every reboot
+
+# 3. the addon
+cd ..\emulator
+npm install
+npm run rebuild
+```
+
+Then `node bin/daemon.js` exactly as on Linux — it picks the `okvhid` bridge
+automatically on Windows and prints `okvhid bridge active`. `OKEMU_BRIDGE` is
+not consulted there; `uhid` and `gadget` are kernel features Windows does not
+have, so offering the choice could only produce a failure whose advice points
+somewhere useless.
+
+Requires **test-signing mode** and Visual Studio's *C++ Clang tools for
+Windows* component. The firmware uses GCC `__attribute__` syntax in ~170
+places, so MSVC cannot compile it; clang-cl can.
 
 ---
 
