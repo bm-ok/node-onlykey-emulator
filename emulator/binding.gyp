@@ -216,12 +216,22 @@
       # escape on its way through gyp, leaving `node_modulesnode-addon-api`
       # and a "'napi.h' file not found" that names the wrong problem
       # entirely. Normalising to forward slashes avoids it; Windows accepts
-      # them everywhere, and on POSIX the replace is a no-op.
+      # them everywhere, and on POSIX there is nothing to normalise.
+      #
+      # String.fromCharCode(92) rather than a backslash, and that is not
+      # squeamishness - it is the only form that survives both shells.
+      # gyp runs this through cmd on Windows and /bin/sh on POSIX, and they
+      # disagree about backslashes inside double quotes: sh collapses `\\` to
+      # `\`, so the obvious `.replace(/\\/g,'/')` reaches node as
+      # `.replace(/\/g,'/')`, where the backslash escapes the slash, the regex
+      # literal never closes, and the build dies with "SyntaxError: missing )
+      # after argument list" pointing at node-addon-api. A command containing
+      # no backslash at all cannot be quoted wrongly by either shell.
       #
       # <!( keeps the result as one string instead of splitting it on
       # whitespace, which also makes a path containing spaces survive.
       "include_dirs": [
-        "<!(node -p \"require('node-addon-api').include_dir.replace(/\\\\/g,'/')\")"
+        "<!(node -p \"require('node-addon-api').include_dir.split(String.fromCharCode(92)).join('/')\")"
       ],
       "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
       "cflags_cc": ["-std=gnu++17", "-fexceptions"],
