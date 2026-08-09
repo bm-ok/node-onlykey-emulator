@@ -37,10 +37,10 @@ function Bad($m)  { Write-Host "    $m" -ForegroundColor Red }
 # The four root devices. These hardware IDs must match the [Standard] section
 # of okvhid.inf and g_OkInterfaces[].Tag in the generated descriptors.h.
 $Devices = @(
-    @{ Id = 'root\okvhid_kbd';    Instance = 'okvhid_kbd';    What = 'hid.usb0 keyboard' },
-    @{ Id = 'root\okvhid_fido';   Instance = 'okvhid_fido';   What = 'hid.usb1 FIDO2 / CTAP-HID' },
-    @{ Id = 'root\okvhid_vendor'; Instance = 'okvhid_vendor'; What = 'hid.usb2 vendor protocol' },
-    @{ Id = 'root\okvhid_seremu'; Instance = 'okvhid_seremu'; What = 'hid.usb3 SEREMU console' }
+    @{ Id = 'root\okvhid_kbd';    Instance = 'okvhid_kbd';    Pipe = 0; What = 'hid.usb0 keyboard' },
+    @{ Id = 'root\okvhid_fido';   Instance = 'okvhid_fido';   Pipe = 1; What = 'hid.usb1 FIDO2 / CTAP-HID' },
+    @{ Id = 'root\okvhid_vendor'; Instance = 'okvhid_vendor'; Pipe = 2; What = 'hid.usb2 vendor protocol' },
+    @{ Id = 'root\okvhid_seremu'; Instance = 'okvhid_seremu'; Pipe = 3; What = 'hid.usb3 SEREMU console' }
 )
 
 # ------------------------------------------------------------------ checks
@@ -156,48 +156,86 @@ foreach ($d in $Devices) {
 # ------------------------------------------------------------- diagnostics
 Start-Sleep -Seconds 2
 
-Say 'Result'
-$found = Get-PnpDevice -ErrorAction SilentlyContinue |
-         Where-Object { $_.InstanceId -like '*OKVHID*' -or $_.FriendlyName -like '*OnlyKey Virtual HID*' }
+#
+# Report the device and its pipe as two separate facts, because neither one
+# implies the other and reducing them to a single score hides the cases worth
+# seeing.
+#
+# The device comes from PnP and says whether Windows built and started it. The
+# pipe is probed with a raw CreateFile so the Win32 error is legible:
+#
+#   opened            a server is listening and nothing else is attached
+#   ERROR_PIPE_BUSY   the name exists and its one instance is taken - normally
+#                     the emulator, but a client handle also keeps the name and
+#                     its busy state alive after the device behind it is gone,
+#                     so this is only good news next to a present device
+#   FILE_NOT_FOUND    no pipe of that name
+#
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class OkvhidPipeProbe {
+  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+  static extern IntPtr CreateFileW(string p, uint a, uint s, IntPtr sa, uint c, uint f, IntPtr t);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  public static string Probe(string name) {
+    IntPtr h = CreateFileW(@"\\.\pipe\" + name, 0xC0000000u, 0u, IntPtr.Zero, 3u, 0u, IntPtr.Zero);
+    if (h.ToInt64() != -1) { CloseHandle(h); return "listening"; }
+    int e = Marshal.GetLastWin32Error();
+    if (e == 231) return "in use";
+    if (e == 2)   return "absent";
+    if (e == 5)   return "access denied";
+    return "error " + e;
+  }
+}
+'@ -ErrorAction SilentlyContinue
 
-if ($null -eq $found -or $found.Count -eq 0) {
-    Bad 'No OnlyKey Virtual HID devices are present.'
-    Bad 'Check Device Manager for a yellow bang, and read setupapi.dev.log:'
-    Bad '    notepad %SystemRoot%\inf\setupapi.dev.log'
-} else {
-    $found | Format-Table -AutoSize Status, Class, FriendlyName, InstanceId
-    $bad = $found | Where-Object { $_.Status -ne 'OK' }
-    if ($bad) {
-        Warn 'Some devices are not started. Their Problem code is the thing to look up.'
-        $bad | ForEach-Object {
-            $p = (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue).Data
-            Warn "    $($_.FriendlyName): problem $p"
+Say 'Result'
+
+$present = @{}
+Get-PnpDevice -ErrorAction SilentlyContinue |
+    Where-Object { $_.InstanceId -like '*OKVHID*' } |
+    ForEach-Object { $present[$_.InstanceId.Split('\')[-1].ToLower()] = $_ }
+
+$missing = @()
+$rows = foreach ($d in $Devices) {
+    $dev = $present[$d.Instance]
+    if ($dev) {
+        $status = $dev.Status
+        if ($status -ne 'OK') {
+            $p = (Get-PnpDeviceProperty -InstanceId $dev.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode' -ErrorAction SilentlyContinue).Data
+            $status = "$status (problem $p)"
         }
+    } else {
+        $status = 'not created'
+        $missing += $d
+    }
+    [pscustomobject]@{
+        Interface = $d.What
+        Device    = $status
+        Pipe      = "okvhid-$($d.Pipe)"
+        State     = [OkvhidPipeProbe]::Probe("okvhid-$($d.Pipe)")
     }
 }
+$rows | Format-Table -AutoSize
 
-# Each loaded instance hosts one pipe, so a pipe that answers a connect tells
-# you the driver not only installed but ran, which device status alone does
-# not. Connect rather than enumerate names: a name lingers in \\.\pipe\ after
-# its device is gone.
-$live = 0
-$dead = @()
-foreach ($i in 0..3) {
-    $ok = $false
-    try {
-        $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', "okvhid-$i", [System.IO.Pipes.PipeDirection]::InOut)
-        $c.Connect(1500)
-        $ok = $c.IsConnected
-        $c.Dispose()
-    } catch { }
-    if ($ok) { $live++ } else { $dead += "okvhid-$i" }
+if ($missing.Count) {
+    Warn 'Windows did not build these devices:'
+    foreach ($d in $missing) { Warn "    $($d.Id)" }
+    Warn ''
+    Warn 'A device is rebuilt by re-running this script once nothing is holding'
+    Warn 'the previous one. Anything still connected to its pipe counts, so stop'
+    Warn 'the emulator (and any other client) first:'
+    foreach ($d in $missing) { Warn "    okvhid-$($d.Pipe)" }
+    Warn ''
+    Warn 'setupapi.dev.log records why, searching for the hardware ID:'
+    Warn '    notepad %SystemRoot%\inf\setupapi.dev.log'
 }
-Write-Host ''
-Say "Pipes answering: $live of 4$(if ($dead.Count) { '  (silent: ' + ($dead -join ', ') + ')' })"
-if ($live -ne 4) {
-    Warn 'A device listed OK whose pipe stays silent is running an older'
-    Warn 'okvhid.dll - compare the DriverVer above. A device missing from the'
-    Warn 'table above is recreated by re-running this script.'
+
+$stale = $rows | Where-Object { $_.Device -eq 'not created' -and $_.State -ne 'absent' }
+if ($stale) {
+    Warn ''
+    Warn 'A pipe in use with no device behind it is a client still holding the'
+    Warn 'name open. Closing that client releases it.'
 }
 
 Write-Host ''
