@@ -3,27 +3,21 @@
     Remove the OnlyKey virtual HID devices and the okvhid driver.
 
 .DESCRIPTION
-    Reverses install-driver.ps1, in the order that works: devices first, then
-    the driver package. Deleting the package while devices still reference it
-    fails, and /force on a live device leaves an orphan node in Device Manager
-    that only a reboot clears.
+    Reverses install-driver.ps1, in the order the driver store requires:
+    devices first, then the package they reference.
 
 .PARAMETER RemoveTestCertificate
     Also remove the self-signed test certificate from LocalMachine Root and
     TrustedPublisher. Worth doing when you are finished - it is a trust anchor
     with an exportable private key sitting in your user store.
 
-.PARAMETER DisableTestSigning
-    Also run `bcdedit /set testsigning off`. Needs a reboot to take effect.
-
 .EXAMPLE
     .\uninstall-driver.ps1
-    .\uninstall-driver.ps1 -RemoveTestCertificate -DisableTestSigning
+    .\uninstall-driver.ps1 -RemoveTestCertificate
 #>
 [CmdletBinding()]
 param(
-    [switch] $RemoveTestCertificate,
-    [switch] $DisableTestSigning
+    [switch] $RemoveTestCertificate
 )
 
 $ErrorActionPreference = 'Continue'
@@ -92,13 +86,6 @@ if ($RemoveTestCertificate) {
                 Remove-Item $_.PSPath -Force -ErrorAction SilentlyContinue
             }
     }
-}
-
-# ----------------------------------------------------------- test signing
-if ($DisableTestSigning) {
-    Say 'Disabling test signing'
-    & bcdedit /set testsigning off
-    Warn 'Reboot for this to take effect.'
 }
 
 Write-Host ''

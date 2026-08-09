@@ -3,24 +3,20 @@
     Install okvhid and create the four OnlyKey virtual HID devices.
 
 .DESCRIPTION
-    Two steps that are easy to confuse. Adding the driver to the store makes
-    Windows *able* to install it; it does not create anything. The devices are
-    root-enumerated, so they have to be conjured explicitly - there is no bus
-    that will discover them.
+    Both steps are required. The devices are root-enumerated, so there is no
+    bus to discover them; they are created explicitly.
 
-        pnputil /add-driver     puts okvhid.inf in the driver store
+        pnputil /add-driver     puts okvhid.inf in the driver store, which
+                                makes Windows able to install it
         devgen /add             creates root\okvhid_kbd and friends
-
-    Skipping the second step leaves a correctly installed driver and no
-    devices, which looks exactly like a driver that failed to load.
 
 .PARAMETER PackageDir
     Directory holding okvhid.inf, okvhid.dll and okvhid.cat. Defaults to the
     newest signed build.
 
 .PARAMETER Force
-    Install even if the driver is unsigned or test signing is off. The install
-    will very likely fail; this exists so the failure can be read.
+    Install even if the package is unsigned. The install will very likely
+    fail; this exists so the failure can be read.
 
 .EXAMPLE
     .\install-driver.ps1
@@ -76,28 +72,6 @@ if (-not (Test-Path $cat)) {
     if (-not $Force) { throw 'Refusing to install an unsigned package. Pass -Force to try anyway.' }
 }
 
-# Test signing state. `bcdedit /enum` is the only reliable read of it.
-$testsigning = $false
-try {
-    $bcd = & bcdedit /enum '{current}' 2>$null | Out-String
-    $testsigning = $bcd -match 'testsigning\s+Yes'
-} catch { }
-
-if (-not $testsigning) {
-    Warn 'Test signing is OFF.'
-    Warn 'A test-signed driver will not load. If you signed with -Mode Test:'
-    Warn ''
-    Warn '    bcdedit /set testsigning on'
-    Warn '    (then reboot)'
-    Warn ''
-    Warn 'This weakens driver-signature enforcement machine-wide. See SIGNING.md.'
-    if (-not $Force) {
-        throw 'Refusing to continue with test signing off. Pass -Force if the package is production-signed.'
-    }
-} else {
-    Write-Host '    test signing: on'
-}
-
 # ------------------------------------------------------------ driver store
 Say 'Adding okvhid.inf to the driver store'
 
@@ -113,21 +87,15 @@ if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 259) {
     throw "pnputil /add-driver failed with exit code $LASTEXITCODE"
 }
 
-# "Added driver packages: 0" is not a warning anywhere - it is the ordinary
-# report for a package pnputil considers identical to one already in the store,
-# and it decides that on DriverVer alone. So a rebuilt DLL under an unchanged
-# DriverVer is silently discarded and the OLD binary stays loaded, while every
-# other line of output says success. build-direct.ps1 stamps the build time
-# into DriverVer to make that impossible; this catches it if the stamp ever
-# stops happening.
+# pnputil decides whether a package is new on DriverVer alone. build-direct.ps1
+# stamps the build time into it so every rebuild is a distinct version; this
+# reports the case where the store already holds this version and the binary
+# just built therefore stayed on disk.
 if ($addOutput -match 'Added driver packages:\s*0') {
     Warn ''
-    Warn "pnputil added nothing - a package with DriverVer $declaredVer is"
-    Warn 'already in the store, so the binary you just built was NOT installed.'
-    Warn 'The previously installed okvhid.dll is what will load.'
-    Warn ''
-    Warn 'Rebuild (build-direct.ps1 stamps a fresh DriverVer) and re-sign, or'
-    Warn 'remove the existing package first:'
+    Warn "The store already holds DriverVer $declaredVer, so the package was"
+    Warn 'left as it was. Rebuild for a fresh DriverVer and re-sign, or remove'
+    Warn 'the existing package first:'
     Warn '    pnputil /enum-drivers'
     Warn '    pnputil /delete-driver oemNN.inf /uninstall /force'
 }
@@ -208,16 +176,28 @@ if ($null -eq $found -or $found.Count -eq 0) {
     }
 }
 
-# Each loaded instance hosts one pipe, so counting them tells you the driver
-# not only installed but ran - which the device status alone does not.
-$pipes = @(Get-ChildItem '\\.\pipe\' -ErrorAction SilentlyContinue |
-           Where-Object { $_.Name -like 'okvhid-*' })
+# Each loaded instance hosts one pipe, so a pipe that answers a connect tells
+# you the driver not only installed but ran, which device status alone does
+# not. Connect rather than enumerate names: a name lingers in \\.\pipe\ after
+# its device is gone.
+$live = 0
+$dead = @()
+foreach ($i in 0..3) {
+    $ok = $false
+    try {
+        $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', "okvhid-$i", [System.IO.Pipes.PipeDirection]::InOut)
+        $c.Connect(1500)
+        $ok = $c.IsConnected
+        $c.Dispose()
+    } catch { }
+    if ($ok) { $live++ } else { $dead += "okvhid-$i" }
+}
 Write-Host ''
-Say "Pipes: $($pipes.Count) of 4$(if ($pipes.Count) { ' (' + (($pipes.Name | Sort-Object) -join ', ') + ')' })"
-if ($pipes.Count -ne 4) {
-    Warn 'Devices that are OK with no pipe mean the loaded okvhid.dll is an'
-    Warn 'older build - check the DriverVer note above - or OkvhidPipeStart'
-    Warn 'failed. Either way the emulator has nothing to connect to.'
+Say "Pipes answering: $live of 4$(if ($dead.Count) { '  (silent: ' + ($dead -join ', ') + ')' })"
+if ($live -ne 4) {
+    Warn 'A device listed OK whose pipe stays silent is running an older'
+    Warn 'okvhid.dll - compare the DriverVer above. A device missing from the'
+    Warn 'table above is recreated by re-running this script.'
 }
 
 Write-Host ''

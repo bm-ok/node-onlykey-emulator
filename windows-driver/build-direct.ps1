@@ -414,8 +414,8 @@ if ($stampinf) {
     Warn 'will fail InfVerif. Run scripts\fetch-wdk.ps1.'
 }
 
-# InfVerif is cheap and catches exactly the class of mistake that otherwise
-# surfaces as a silent installation failure.
+# InfVerif is cheap and validates the INF here, at build time, where the
+# message is specific.
 $infverif = Get-ChildItem (Join-Path $repo 'vendor\wdk\c\tools') -Recurse -Filter 'infverif.exe' -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
 

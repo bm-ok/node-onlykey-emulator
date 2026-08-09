@@ -235,28 +235,20 @@ OkvhidDeliverOutput(_In_ PDEVICE_CONTEXT Ctx, _In_ ULONG Kind,
 /* ------------------------------------------------------------------ pipe */
 
 /*
- * All pipe I/O is overlapped, and that is not an optimisation.
+ * All pipe I/O is overlapped, for correctness rather than throughput.
  *
- * The first version used blocking calls, which cost a deadlock and the ability
- * to shut down cleanly:
+ * Two properties depend on it. A write must be able to give up: Windows keeps
+ * handing the FIDO interface output reports whether or not anyone is reading,
+ * so the pipe buffer fills whenever the emulator is stopped or paused, and a
+ * write that waits indefinitely does so holding PipeLock - which the pipe
+ * thread needs to recycle the connection. Overlapped writes take a deadline
+ * instead and release the lock.
  *
- *   A blocking WriteFile under PipeLock stops forever once the pipe buffer
- *   fills and the emulator is not reading - a crashed client, a paused
- *   debugger, anything. Windows keeps handing the FIDO interface output
- *   reports whether or not anyone is listening, so the buffer does fill. The
- *   writer then holds PipeLock indefinitely, the pipe thread blocks trying to
- *   take it to recycle the connection, and that interface never comes back.
- *   The other three carry on, which makes it look like a FIDO-specific fault
- *   rather than a lock-ordering one.
- *
- *   And neither ConnectNamedPipe nor ReadFile can be cancelled from another
- *   thread, so stopping meant closing the handle out from under the blocked
- *   call - a race against a handle value the thread still holds and might
- *   close again after the process has reissued it to something else.
- *
- * Overlapped fixes both. Writes get a deadline, waits are on an event pair so
- * StopEvent ends them immediately, and the thread owns its handle from
- * creation to close with nobody else touching it.
+ * And a wait must be cancellable from another thread, which neither
+ * ConnectNamedPipe nor ReadFile is when blocking. Every wait here is on an
+ * event pair including StopEvent, so shutdown ends it immediately and the
+ * thread closes its own handle - owned from creation to close, touched by
+ * nobody else.
  */
 
 /*

@@ -431,22 +431,15 @@ OkvhidGetString(_In_ PDEVICE_CONTEXT Ctx, _In_ WDFREQUEST Request)
 }
 
 /*
- * There is no HID_XFER_PACKET here, and assuming there was cost a crash.
+ * Report buffers are flat under UMDF.
  *
  * Under KMDF a report IOCTL carries a HID_XFER_PACKET - a length, a report ID
- * and a POINTER to the data - in Parameters.Others.Arg1. Under UMDF it does
- * not carry one at all. mshidumdf.sys has already resolved the packet and
- * hands the framework the report bytes themselves, so the input buffer of an
- * IOCTL_HID_WRITE_REPORT is the report, flat, and nothing else.
+ * and a POINTER to the data - in Parameters.Others.Arg1. UMDF carries no such
+ * structure: mshidumdf.sys has already resolved the packet and hands the
+ * framework the report bytes themselves. So the input buffer of an
+ * IOCTL_HID_WRITE_REPORT is the report, flat, and its length is the report
+ * length - 1 for the keyboard's LED report, 64 for a CTAP-HID frame.
  *
- * Reading it as a HID_XFER_PACKET compiles, and on a 64-byte CTAP-HID packet
- * it succeeds: 64 is comfortably larger than sizeof(HID_XFER_PACKET), so the
- * length check passes and bytes 0-7 of the CTAP frame get dereferenced as
- * reportBuffer. WUDFHost dies, PnP restarts the device, Windows says "reinsert
- * your security key", and it happens again on the retry. The keyboard hid it:
- * its LED report is one byte, which fails the length check and returns an
- * error instead of faulting.
- *
- * The trace is what named it - in=1 on the keyboard and in=64 on FIDO are
- * report sizes, not structure sizes.
+ * Read them with WdfRequestRetrieveInputBuffer and treat what comes back as
+ * report bytes.
  */

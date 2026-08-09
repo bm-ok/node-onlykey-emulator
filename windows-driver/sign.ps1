@@ -3,14 +3,16 @@
     Catalog and sign the okvhid driver package.
 
 .DESCRIPTION
-    Two modes, and the split is the whole point of this script existing
-    separately from build.ps1.
+    Generates the catalog, signs the package, and in Test mode establishes the
+    trust that lets this machine install it.
 
     -Mode Test
         Generates (or reuses) a self-signed code-signing certificate, trusts
-        it on THIS machine only, and signs with it. This is the experimental
-        path. Windows will still refuse to load the result until test signing
-        is enabled - the script tells you, and does not do it for you.
+        it on THIS machine, and signs with it. That is everything the driver
+        needs to install and run here. The package is an .inf, a .cat and a
+        user-mode .dll that loads into WUDFHost, so PnP package verification
+        is the check it has to pass, and a certificate in LocalMachine\Root
+        and LocalMachine\TrustedPublisher satisfies it.
 
     -Mode Production
         Signs with a real certificate you supply, by thumbprint or PFX, and
@@ -19,9 +21,9 @@
         OnlyKey/CRYPTOTRUST signs this for release, it is this command with a
         different certificate, not a different driver.
 
-        For a driver that installs for an ordinary user with no test signing
-        and no warnings, the certificate is not enough on its own - the
-        package has to go through Microsoft attestation signing in Partner
+        Production is what allows installing on machines that do not already
+        trust your certificate. For that the certificate alone is not enough -
+        the package goes through Microsoft attestation signing in Partner
         Center. See SIGNING.md.
 
 .PARAMETER Mode
@@ -104,9 +106,8 @@ function Find-Tool($name) {
         $all = Get-ChildItem -Path $r -Recurse -Filter $name -ErrorAction SilentlyContinue
         if (-not $all) { continue }
 
-        # Prefer x64, but accept x86 - Inf2Cat only ships as x86 and runs
-        # perfectly well under WOW64. Requiring x64 here is what made it
-        # "not found" on a machine that had it.
+        # Prefer x64, accept x86: Inf2Cat ships only as x86 and runs under
+        # WOW64.
         $hit = $all | Where-Object { $_.FullName -match '\\x64\\' } |
                Sort-Object FullName -Descending | Select-Object -First 1
         if (-not $hit) {
@@ -125,11 +126,9 @@ if (-not $signtool) { throw 'signtool.exe not found. Install the Windows SDK or 
 
 # --------------------------------------------------------------- catalog
 #
-# The .cat is what carries the signature for the whole package. It has to be
-# regenerated after any change to the INF or the binary, because it is a
-# manifest of their hashes - signing a stale catalog produces a package that
-# fails installation with a hash mismatch rather than a signature error, which
-# is a considerably more confusing message.
+# The .cat carries the signature for the whole package and is a manifest of
+# the INF's and binary's hashes, so it is regenerated on every run to stay in
+# step with them.
 Say 'Generating catalog'
 
 # 10_X64 covers Windows 10 and 11 on x64; ARM64 needs its own.
@@ -226,17 +225,11 @@ foreach ($file in @($cat, (Join-Path $PackageDir 'okvhid.dll'))) {
 
 Write-Host ''
 if ($Mode -eq 'Test') {
-    Write-Host 'Test-signed.' -ForegroundColor Green
+    Write-Host 'Self-signed, and trusted on this machine.' -ForegroundColor Green
     Write-Host ''
-    Write-Host 'Windows will not load this until test signing is on:' -ForegroundColor Yellow
-    Write-Host '    bcdedit /set testsigning on      (elevated, then reboot)'
-    Write-Host ''
-    Write-Host 'That lowers driver-signature enforcement for the whole machine,'
-    Write-Host 'not just this driver. It is the right trade on a dedicated test'
-    Write-Host 'box and the wrong one on a daily driver. SIGNING.md covers what'
-    Write-Host 'production signing looks like instead.'
+    Write-Host 'Next:  .\install-driver.ps1   (elevated)'
 } else {
     Write-Host 'Signed with a production certificate.' -ForegroundColor Green
-    Write-Host 'For install-without-warnings on other machines this still needs'
+    Write-Host 'Installing without warnings on other machines also needs'
     Write-Host 'Microsoft attestation signing - see SIGNING.md.'
 }

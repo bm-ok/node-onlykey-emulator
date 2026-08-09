@@ -25,13 +25,13 @@ EEPROM that persist across restarts.
     module; see [Why a USB gadget](#why-a-usb-gadget). A UHID fallback needs
     neither.
   * **Windows** — needs the `okvhid` HID minidriver from
-    [`windows-driver/`](windows-driver/README.md), built and installed once,
-    **and the machine in test-signing mode**.
+    [`windows-driver/`](windows-driver/README.md), built, self-signed and
+    installed once.
 * **Node.js 22.22.2+** (or 24.15+, or 26+) and a C++ toolchain
   (`build-essential`, `python3`, `python3-venv`). The floor is not ours: it is
   `node-gyp`'s, via `emulator/package.json` →
-  `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`. Check it rather than trust this
-  line, because this line has been wrong before:
+  `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`. Read it from the package rather
+  than from this line:
 
       node -p "require('./emulator/node_modules/node-gyp/package.json').engines.node"
 
@@ -103,7 +103,7 @@ tests mean anything.
 
 | | Linux (gadget) | Linux (uhid) | Windows (okvhid) |
 |---|---|---|---|
-| Setup | `sudo ./scripts/setup-permissions.sh` | same | build + sign + install a driver, **and test-signing mode** |
+| Setup | `sudo ./scripts/setup-permissions.sh` | same | build + self-sign + install a driver |
 | Manufacturer / product strings | yes | **no** (empty) | yes |
 | `interface_number` to hidapi | yes | **no** (`-1`) | **no** (`-1`) |
 | Found by python-onlykey | yes | **no** | yes, via usage page |
@@ -119,12 +119,17 @@ USB device path and these devices are root-enumerated. Any client testing
 USB bus, nothing in a HID minidriver can produce that path, which is also why
 VirtualBox USB passthrough cannot see the device at all.
 
-**Test-signing mode is a real cost.** `okvhid` is self-signed, so Windows will
-not load it unless `bcdedit /set testsigning on` — which lowers driver
-signature enforcement machine-wide, not for this driver alone. That is
-defensible on a dedicated test box and not on a daily machine. Production
-signing (EV certificate + Microsoft attestation) is the only way off it, and
-the pipe ACL would need tightening first — see
+The Windows setup cost is trusting one self-signed certificate. `okvhid` is
+UMDF — the package is an `.inf`, a `.cat` and a user-mode `.dll` that loads
+into `WUDFHost`, with Microsoft's own `WUDFRd.sys` and `mshidumdf.sys`
+underneath it — so PnP package verification is the check it has to pass, and a
+certificate in `LocalMachine\Root` and `LocalMachine\TrustedPublisher`
+satisfies it. `sign.ps1` installs it into both stores;
+`uninstall-driver.ps1 -RemoveTestCertificate` takes it out again.
+
+Production signing (EV certificate + Microsoft attestation) is what you would
+need to ship this to other people without them trusting your certificate —
+and the pipe ACL would have to be tightened first. See
 [`windows-driver/README.md`](windows-driver/README.md).
 
 Two Windows-specific operational notes: the root devices **do not survive a
@@ -323,9 +328,9 @@ not consulted there; `uhid` and `gadget` are kernel features Windows does not
 have, so offering the choice could only produce a failure whose advice points
 somewhere useless.
 
-Requires **test-signing mode** and Visual Studio's *C++ Clang tools for
-Windows* component. The firmware uses GCC `__attribute__` syntax in ~170
-places, so MSVC cannot compile it; clang-cl can.
+Requires Visual Studio's *C++ Clang tools for Windows* component — the
+firmware uses GCC `__attribute__` syntax in ~170 places, so MSVC cannot
+compile it and clang-cl can.
 
 ---
 
