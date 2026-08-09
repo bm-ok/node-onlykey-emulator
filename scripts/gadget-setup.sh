@@ -37,7 +37,14 @@ GADGET=/sys/kernel/config/usb_gadget/onlykey
 KREL="$(uname -r)"
 KO="$REPO/build/dummy_hcd/dummy_hcd.ko"
 RULE=/etc/udev/rules.d/71-onlykey-gadget.rules
-TARGET_USER="${SUDO_USER:-root}"
+# Who ends up owning the gadget's device nodes and its UDC file.
+#
+# OKEMU_TARGET_USER first, because SUDO_USER only exists when a human ran this
+# through sudo. The systemd unit below runs the same script at every boot as
+# root with no sudo in the picture, so SUDO_USER is unset there and this would
+# fall back to root - handing the UDC to root and quietly removing the ability
+# to unbind the gadget unprivileged. The unit therefore bakes the real user in.
+TARGET_USER="${OKEMU_TARGET_USER:-${SUDO_USER:-root}}"
 
 [[ $EUID -eq 0 ]] || { echo "needs root:  sudo $0 $*" >&2; exit 1; }
 
@@ -164,16 +171,17 @@ sleep 1
 # writing an empty string detaches it. Handing it to the invoking user is what
 # keeps the daemon unprivileged.
 #
-# Checked rather than attempted. This chown does not always take - configfs is
-# not an ordinary filesystem and the attribute can stay root-owned - and the
-# old `2>/dev/null || true` reported success either way.
+# Checked rather than attempted, because a chown to the WRONG user succeeds.
+# When TARGET_USER resolves to root the call does exactly what it was told and
+# the UDC ends up root-owned, which the old `2>/dev/null || true` reported as
+# success. See TARGET_USER above for how that used to happen at every boot.
 #
-# The cost of that silence is not the unplug feature; it is the diagnosis.
-# onlykey-testing advertises its `bus-detach` capability from the presence of a
-# gadget, so with a root-owned UDC the kit believes it can unplug, and
-# 02-cli/04-pqc-no-device fails on a ten-second timeout rather than skipping
-# with a reason. Measured on 24.04.4: UDC left `root:root`, the failure looked
-# like a device fault, and it took a bisect to get back to this line.
+# The cost is the diagnosis rather than the feature. onlykey-testing advertises
+# its `bus-detach` capability from the presence of a gadget, so with a
+# root-owned UDC the kit believes it can unplug, and 02-cli/04-pqc-no-device
+# fails on a ten-second timeout rather than skipping with a reason. Measured on
+# 24.04.4: the UDC was root:root, the failure read as a device fault, and it
+# took a bisect to get back to this line.
 chown "$TARGET_USER" "$GADGET/UDC" 2>/dev/null || true
 
 if [[ $TARGET_USER != root ]] && ! sudo -u "$TARGET_USER" sh -c "test -w '$GADGET/UDC'"; then
@@ -214,6 +222,9 @@ Requires=sys-kernel-config.mount
 Type=oneshot
 RemainAfterExit=yes
 Environment=NODE_BIN=$NODE_BIN
+# Baked in because this runs as root at boot with no sudo, so SUDO_USER is
+# unset and the script would otherwise hand the UDC and the hidg nodes to root.
+Environment=OKEMU_TARGET_USER=$TARGET_USER
 ExecStart=$SCRIPT_SELF
 ExecStop=$SCRIPT_SELF --down
 User=root
