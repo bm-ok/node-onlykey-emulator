@@ -61,6 +61,21 @@ which looks exactly like a driver that failed to load.
 zero pipes means the loaded binary is an older build, which is the one failure
 here that reports success everywhere else.
 
+### The devices do not survive a reboot
+
+The driver package persists in the store; the devices do not. `devgen` creates
+them at runtime under `SWD\DEVGEN`, and after a restart they are back to
+phantoms - `Get-PnpDevice -PresentOnly` finds none, and there are no pipes.
+
+So **`install-driver.ps1` has to be run again after every Windows reboot.** It
+is cheap when the package is already signed and in the store: it re-adds a
+package Windows already has and recreates the four devices. No rebuild, no
+re-sign.
+
+This is easy to miss during development, because every reboot tends to be
+followed by an install anyway. It shows up later, as a machine where the
+driver is definitely installed and the emulator cannot find a single pipe.
+
 ## Unplug and replug
 
 ```
