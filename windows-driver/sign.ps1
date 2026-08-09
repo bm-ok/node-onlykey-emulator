@@ -131,6 +131,12 @@ if (-not $signtool) { throw 'signtool.exe not found. Install the Windows SDK or 
 # step with them.
 Say 'Generating catalog'
 
+# inf2cat catalogues every file in the directory, so a catalog left from a
+# previous run would be hashed into its own replacement. Remove it first and
+# the manifest covers the .inf and .dll alone.
+$staleCat = Join-Path $PackageDir 'okvhid.cat'
+if (Test-Path $staleCat) { Remove-Item $staleCat -Force }
+
 # 10_X64 covers Windows 10 and 11 on x64; ARM64 needs its own.
 $osList = if ($PackageDir -match 'ARM64') { '10_NI_ARM64,10_VB_ARM64' } else { '10_X64' }
 

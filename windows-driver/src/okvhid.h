@@ -92,12 +92,24 @@ typedef struct _DEVICE_CONTEXT {
      * a window where the thread checks the flag just before blocking on
      * something only the event would end. WriteEvent belongs to whoever holds
      * PipeLock; only one write is ever in flight.
+     *
+     * ListenPipe is the server handle the thread is waiting on, published so
+     * that the stop path can close it. It is owned by interlocked exchange
+     * rather than by PipeLock: whoever swaps out a non-NULL value closes it,
+     * so the stop path can reclaim it without taking a lock the thread it is
+     * trying to stop might be holding.
+     *
+     * The handle is what keeps the pipe NAME registered, so releasing it is
+     * the difference between a stranded thread and a stranded name. A name
+     * outlives the device it belonged to and blocks the next device from
+     * taking it, because the pipe allows one instance.
      */
     WDFWAITLOCK PipeLock;
     HANDLE      Pipe;
     HANDLE      PipeThread;
     HANDLE      StopEvent;
     HANDLE      WriteEvent;
+    HANDLE volatile ListenPipe;
     volatile BOOLEAN PipeConnected;
     volatile BOOLEAN PipeStopping;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;

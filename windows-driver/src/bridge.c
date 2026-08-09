@@ -246,10 +246,26 @@ OkvhidDeliverOutput(_In_ PDEVICE_CONTEXT Ctx, _In_ ULONG Kind,
  *
  * And a wait must be cancellable from another thread, which neither
  * ConnectNamedPipe nor ReadFile is when blocking. Every wait here is on an
- * event pair including StopEvent, so shutdown ends it immediately and the
- * thread closes its own handle - owned from creation to close, touched by
- * nobody else.
+ * event pair including StopEvent, so shutdown ends it immediately.
  */
+
+/*
+ * Claim the listening handle, whoever gets there first.
+ *
+ * The thread and the stop path both want to close it, and exactly one may.
+ * An interlocked exchange decides that without a lock, which matters because
+ * the stop path runs when the thread may be unresponsive - taking a lock to
+ * reclaim from a wedged thread is how you inherit its wedge.
+ *
+ * Returns the handle to the caller that won, NULL to the one that lost. Only
+ * the winner may touch it: to the loser it is already closed.
+ */
+static HANDLE
+OkvhidClaimListen(_In_ PDEVICE_CONTEXT Ctx)
+{
+    HANDLE h = (HANDLE)InterlockedExchangePointer((PVOID volatile *)&Ctx->ListenPipe, NULL);
+    return (h == INVALID_HANDLE_VALUE) ? NULL : h;
+}
 
 /*
  * How long a write waits before giving up on the emulator.
@@ -449,8 +465,13 @@ OkvhidPipeThread(LPVOID Param)
             continue;
         }
 
+        /* Published before it is waited on, so a stop that arrives during the
+         * wait has something to close. */
+        InterlockedExchangePointer((PVOID volatile *)&ctx->ListenPipe, pipe);
+
         if (!OkvhidPipeAccept(pipe, ioEvent, ctx->StopEvent)) {
-            CloseHandle(pipe);
+            HANDLE mine = OkvhidClaimListen(ctx);
+            if (mine != NULL) CloseHandle(mine);
             if (ctx->PipeStopping) break;
             continue;
         }
@@ -516,9 +537,14 @@ OkvhidPipeThread(LPVOID Param)
         ctx->Pipe = NULL;
         WdfWaitLockRelease(ctx->PipeLock);
 
-        CancelIoEx(pipe, NULL);
-        DisconnectNamedPipe(pipe);
-        CloseHandle(pipe);
+        {
+            HANDLE mine = OkvhidClaimListen(ctx);
+            if (mine != NULL) {
+                CancelIoEx(mine, NULL);
+                DisconnectNamedPipe(mine);
+                CloseHandle(mine);
+            }
+        }
     }
 
     CloseHandle(ioEvent);
@@ -568,10 +594,25 @@ OkvhidPipeStop(_In_ PDEVICE_CONTEXT Ctx)
     Ctx->PipeStopping = TRUE;
     SetEvent(Ctx->StopEvent);
 
-    /* Bounded: if the thread is wedged, leaking it is better than hanging
+    /* Bounded: if the thread is wedged, abandoning it is better than hanging
      * device removal, which would wedge PnP for everything. */
     if (WaitForSingleObject(Ctx->PipeThread, 3000) == WAIT_TIMEOUT) {
-        /* Leak the thread and its handle rather than free what it still uses. */
+        /*
+         * Abandon the thread, but take the pipe with us. The handle is what
+         * holds the name, and the name is what the NEXT device for this
+         * interface needs - the pipe allows one instance, so a name left
+         * behind means that device can never open its own.
+         *
+         * Everything else the thread might still be using is left alone: the
+         * events, the context, its own handle. Only the name is reclaimed,
+         * because only the name outlives this device in a way that harms the
+         * next one.
+         */
+        HANDLE stranded = OkvhidClaimListen(Ctx);
+        if (stranded != NULL) {
+            CancelIoEx(stranded, NULL);
+            CloseHandle(stranded);
+        }
         Ctx->PipeThread = NULL;
         return;
     }
