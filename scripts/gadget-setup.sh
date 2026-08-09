@@ -163,7 +163,26 @@ sleep 1
 # The UDC file is plug/unplug: writing the controller name attaches the device,
 # writing an empty string detaches it. Handing it to the invoking user is what
 # keeps the daemon unprivileged.
+#
+# Checked rather than attempted. This chown does not always take - configfs is
+# not an ordinary filesystem and the attribute can stay root-owned - and the
+# old `2>/dev/null || true` reported success either way.
+#
+# The cost of that silence is not the unplug feature; it is the diagnosis.
+# onlykey-testing advertises its `bus-detach` capability from the presence of a
+# gadget, so with a root-owned UDC the kit believes it can unplug, and
+# 02-cli/04-pqc-no-device fails on a ten-second timeout rather than skipping
+# with a reason. Measured on 24.04.4: UDC left `root:root`, the failure looked
+# like a device fault, and it took a bisect to get back to this line.
 chown "$TARGET_USER" "$GADGET/UDC" 2>/dev/null || true
+
+if [[ $TARGET_USER != root ]] && ! sudo -u "$TARGET_USER" sh -c "test -w '$GADGET/UDC'"; then
+  echo "WARNING: $GADGET/UDC is owned by $(stat -c '%U:%G' "$GADGET/UDC") and is not" >&2
+  echo "         writable by $TARGET_USER. The gadget is up and the device works," >&2
+  echo "         but nothing unprivileged can UNBIND it, so unplug/replug and any" >&2
+  echo "         test that takes the device off the bus will not run." >&2
+  echo "         To unbind by hand:  sudo sh -c 'echo > $GADGET/UDC'" >&2
+fi
 
 cat > "$RULE" <<'EOF'
 # OnlyKey emulator - USB gadget HID endpoints.
