@@ -47,7 +47,19 @@ done
 # default. A stock Ubuntu 24.04 therefore passes every check above and then
 # fails at the venv step, seven clones later, which is the exact outcome this
 # block exists to prevent.
-python3 -m venv --help >/dev/null 2>&1 || missing+=("python3-venv (python3 -m venv)")
+#
+# Test for ensurepip, NOT for `python3 -m venv --help`. Debian ships the venv
+# module in the base python3 but strips ensurepip into python3-venv, so --help
+# exits 0 on precisely the machines that cannot create a venv:
+#
+#     $ python3 -m venv --help >/dev/null; echo $?
+#     0
+#     $ python3 -c 'import ensurepip'
+#     ModuleNotFoundError: No module named 'ensurepip'
+#
+# Measured on stock Ubuntu 24.04.4. A --help check would pass there and let the
+# script fail later anyway, which is the bug rather than a fix for it.
+python3 -c 'import ensurepip' >/dev/null 2>&1 || missing+=("python3-venv (python3 -m venv needs ensurepip)")
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo "!! missing required tools: ${missing[*]}" >&2

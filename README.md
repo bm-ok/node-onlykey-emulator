@@ -19,7 +19,16 @@ EEPROM that persist across restarts.
 * Linux. The default transport is a **USB gadget** (`dummy_hcd` + `f_hid`), which
   needs kernel headers and matching kernel source to build one small module —
   see [Why a USB gadget](#why-a-usb-gadget). A UHID fallback needs neither.
-* Node.js 18+ and a C++ toolchain (`build-essential`, `python3`)
+* **Node.js 22.22.2+** (or 24.15+, or 26+) and a C++ toolchain
+  (`build-essential`, `python3`, `python3-venv`). The floor is not ours: it is
+  `node-gyp`'s, via `emulator/package.json` →
+  `engines: ^22.22.2 || ^24.15.0 || >=26.0.0`. Check it rather than trust this
+  line, because this line has been wrong before:
+
+      node -p "require('./emulator/node_modules/node-gyp/package.json').engines.node"
+
+  Ubuntu 24.04 ships Node 18, which does **not** satisfy it. nvm's current LTS
+  (24.x) does.
 * [pm2](https://pm2.keymetrics.io/) — supervises the emulator process
 * The firmware sources and Teensyduino toolchain under `onlykey/` (see `setup.sh`)
 
@@ -93,8 +102,15 @@ Re-running is safe: existing checkouts are left alone rather than re-cloned.
 Nothing is pinned — every clone tracks its default branch, so a component stays
 swappable.
 
-Needs `git`, `python3`, `make`, Node 18+, and either `curl` or `wget`. Docker is
-optional and only gates the device `.hex` build.
+Needs `git`, `python3`, `python3-venv`, `make`, Node (see Requirements above for
+the real floor), and either `curl` or `wget`. Docker is optional and only gates
+the device `.hex` build.
+
+`python3-venv` is called out separately because on Debian and Ubuntu it is a
+different package from `python3`: the `venv` module is in the base install but
+`ensurepip` is stripped into `python3-venv`. So `python3 -m venv --help` exits 0
+on a machine that cannot actually create one, and setup.sh checks
+`python3 -c 'import ensurepip'` instead.
 
 ### 2. Grant device access (the one privileged step)
 
@@ -106,6 +122,30 @@ already in the stock kernel. Install the kernel headers and source first:
 ```sh
 sudo apt install linux-headers-$(uname -r) linux-source-$(uname -r | cut -d- -f1)
 ```
+
+**On an HWE kernel that second package does not exist.** Ubuntu publishes
+`linux-source-<version>` for the GA kernel only, so on 24.04 running
+`linux-generic-hwe-24.04` — an entirely ordinary setup — `uname -r` reports
+e.g. `7.0.0-28-generic` while the archive offers nothing newer than
+`linux-source-6.8.0`. Get the matching tree from the kernel's own source
+package instead; only one file out of it is needed, so download without
+extracting:
+
+```sh
+# find the source package behind the running kernel
+pkg=$(dpkg -S "/boot/vmlinuz-$(uname -r)" | cut -d: -f1)
+apt-cache show "$pkg" | awk -F': ' '/^Source:/{print $2}'   # e.g. linux-signed-hwe-7.0
+
+# the tree lives in the unsigned one
+sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+sudo apt update
+apt-get source --download-only linux-hwe-7.0
+tar -xf linux-hwe-7.0_*.orig.tar.gz --wildcards '*/drivers/usb/gadget/udc/dummy_hcd.c'
+```
+
+Measured on 24.04.4 with kernel 7.0.0-28-generic: the extracted `dummy_hcd.c`
+(2,935 lines) builds cleanly against `/lib/modules/$(uname -r)/build` and yields
+a working `dummy_udc.0`.
 
 Then run **the one setup command** — as yourself, *without* sudo. It elevates
 only the individual steps that need root, so the kernel module is compiled
@@ -161,6 +201,19 @@ Group membership only applies to a **new login session** — log out and back in
 
 ```sh
 ls -l /dev/uhid      # should no longer be  crw------- root root
+```
+
+The `modprobe uhid` above is not optional, and it has to come first. `/dev/uhid`
+exists **before** the module is loaded — systemd creates it as a static node
+from `modules.devname` so that opening it autoloads `uhid` — and a static node
+is not a udev device, so no rule applies to it. Install the rule on a machine
+where `uhid` has never loaded and the node stays `crw------- root root` however
+many times you reload and trigger udev; it only picks up the ACL and group once
+the module is loaded and a real device appears:
+
+```
+before modprobe:  crw-------  1 root root     /dev/uhid
+after  modprobe:  crw-rw----+ 1 root plugdev  /dev/uhid   ( +  user:you:rw- )
 ```
 
 > The rule uses `TAG+="uaccess"`, which grants the device to whoever is logged
@@ -286,6 +339,27 @@ into a machine nobody is sitting at. Decoding the reports at the source sidestep
 that entirely, and also catches non-printing keys (Tab, Enter) that a slot uses
 to move between fields. To have the device really drive an application, pass the
 USB device through to a VM and let the guest bind it as a keyboard.
+
+### Driving the GUI over SSH
+
+Anything automating the GUI from a non-interactive session needs `DISPLAY` and
+an Xauthority, and **must not hard-code the display number**. Xorg is started
+with `-displayfd`, so it takes the first free one: with a gdm greeter in front
+the session lands on `:1`, and with autologin straight through it lands on `:0`.
+The same machine gives different answers on different boots, which surfaces as
+a GUI test that fails intermittently and looks like the harness's fault.
+
+Derive it from the socket instead:
+
+```sh
+export DISPLAY=":$(ls /tmp/.X11-unix/ | sed 's/^X//' | head -1)"
+export XAUTHORITY=/run/user/$(id -u)/gdm/Xauthority
+xdpyinfo | head -2        # proves the session is reachable
+```
+
+Also note SSH sessions do not inherit the seat's session, so `who`, `pgrep Xorg`
+and `loginctl` are unreliable ways to ask whether a desktop is running — they
+can all report nothing while a perfectly good GNOME session is on screen.
 
 The GUI hosts the IPC socket, so it can be started before or after the
 emulator — the emulator dials in whenever it comes up. It holds no authority
