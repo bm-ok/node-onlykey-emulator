@@ -95,12 +95,18 @@ cannot see it.
 ./setup.sh
 ```
 
-Clones the seven component repos into `onlykey/`, provisions `okpqc-venv` from
+Clones the eight component repos into `onlykey/`, provisions `okpqc-venv` from
 them (including `age`/`age-keygen`, which pip cannot supply), builds the
 firmware toolchain image if Docker is present, and builds the emulator addon.
 Re-running is safe: existing checkouts are left alone rather than re-cloned.
 Nothing is pinned — every clone tracks its default branch, so a component stays
 swappable.
+
+Three of those checkouts also get `npm install`, because the test kit loads
+modules out of them: `onlykey-testing` itself, `onlykey.github.io` (whose dev
+server on port 3000 is what the kit's browser tier opens) and `OnlyKey-App`.
+A checkout without `node_modules` fails at `require()` time, which reads as a
+missing feature rather than a missing install.
 
 Needs `git`, `python3`, `python3-venv`, `make`, Node (see Requirements above for
 the real floor), and either `curl` or `wget`. Docker is optional and only gates

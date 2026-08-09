@@ -90,6 +90,10 @@ clone https://github.com/bm-ok/0c-coder-onlykey.github.io  ./onlykey.github.io
 clone https://github.com/bm-ok/0c-coder-lib-agent          ./lib-agent
 clone https://github.com/bm-ok/0c-coder-python-onlykey     ./python-onlykey
 clone https://github.com/bm-ok/onlykey-testing             ./onlykey-testing
+# The OnlyKey App, a packaged nw.js application. onlykey-testing's lib/app.js
+# resolves it at ../OnlyKey-App relative to its own checkout, and section 4 -
+# eight files - reports "the OnlyKey App is not checked out" without it.
+clone https://github.com/bm-ok/OnlyKey-App                 ./OnlyKey-App
 
 git -C ./python-onlykey submodule update --init onlykey-solo-python
 
@@ -179,6 +183,30 @@ npm install
 
 cd "$ROOT"
 npm install
+
+# --- checkouts that are cloned above but also have to be installed ----------
+#
+# Cloning these is not enough: onlykey-testing loads modules out of them, so a
+# checkout without node_modules fails at require() time, which reads as a
+# missing feature rather than a missing install.
+#
+#   onlykey-testing    its own node-hid and @noble packages
+#   onlykey.github.io  the web app's dependencies - lib/webenv.js loads them,
+#                      and its dev server on port 3000 is what section 3's
+#                      browser tier opens. Without them section 3 fails with
+#                      "Cannot find module 'file-saver'" and a 30s timeout
+#                      waiting for port 3000.
+#   OnlyKey-App        gulp and the app's own dependencies, for section 4
+#
+# Each is skipped when the checkout is absent, so a partial tree still gets as
+# far as it can rather than aborting the whole setup.
+for kit in onlykey-testing onlykey.github.io OnlyKey-App; do
+  dir="$ROOT/onlykey/$kit"
+  if [ -f "$dir/package.json" ]; then
+    echo "== installing $kit"
+    npm --prefix "$dir" install
+  fi
+done
 
 echo
 echo "Setup complete. Start the emulator with pm2 - see README's Running section."
