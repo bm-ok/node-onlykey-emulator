@@ -42,6 +42,13 @@ for tool in git python3 make tar install npm node; do
 done
 [ -n "$FETCHER" ] || missing+=("curl or wget")
 
+# venv is a module, not a command, so the loop above cannot see it - and on
+# Debian and Ubuntu it is packaged separately from python3 and not installed by
+# default. A stock Ubuntu 24.04 therefore passes every check above and then
+# fails at the venv step, seven clones later, which is the exact outcome this
+# block exists to prevent.
+python3 -m venv --help >/dev/null 2>&1 || missing+=("python3-venv (python3 -m venv)")
+
 if [ ${#missing[@]} -gt 0 ]; then
   echo "!! missing required tools: ${missing[*]}" >&2
   echo "   Docker is optional and only gates the device .hex build." >&2
@@ -81,7 +88,12 @@ git -C ./python-onlykey submodule update --init onlykey-solo-python
 # (VENV_BIN), so all of these have to land here or tests fail in ways that look
 # like device faults rather than a missing tool.
 echo "== provisioning okpqc-venv"
-[ -d ./okpqc-venv ] || python3 -m venv ./okpqc-venv
+# Test for pip, not for the directory. A venv that failed partway leaves the
+# directory behind with bin/ and include/ but no pip, and a -d test then skips
+# creation forever: every re-run dies on `./okpqc-venv/bin/pip: No such file or
+# directory`, which no longer mentions venv at all. Re-running after fixing the
+# original cause is the obvious next move, and it has to work.
+[ -x ./okpqc-venv/bin/pip ] || { rm -rf ./okpqc-venv && python3 -m venv ./okpqc-venv; }
 ./okpqc-venv/bin/pip install --upgrade pip
 
 #   onlykey        -> onlykey-cli, age-plugin-onlykey
