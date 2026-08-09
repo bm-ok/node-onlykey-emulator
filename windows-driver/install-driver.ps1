@@ -140,16 +140,24 @@ if (-not $devgen -and -not $devcon) {
     throw 'Cannot create root devices.'
 }
 
+#
+# Keep what the tool said. devgen can decline to create a device and still
+# exit 0, so its own words are the only account of why - and discarding them
+# leaves the missing device with no explanation attached.
+#
 Say 'Creating the four root devices'
+$creation = @{}
 foreach ($d in $Devices) {
     Write-Host "    $($d.Id)  ($($d.What))"
     if ($devgen) {
-        & $devgen /add /instanceid $d.Instance /hardwareid $d.Id | Out-Null
+        $out = & $devgen /add /instanceid $d.Instance /hardwareid $d.Id 2>&1 | Out-String
     } else {
-        & $devcon install $inf $d.Id | Out-Null
+        $out = & $devcon install $inf $d.Id 2>&1 | Out-String
     }
+    $creation[$d.Instance] = @{ Exit = $LASTEXITCODE; Output = $out.Trim() }
     if ($LASTEXITCODE -ne 0) {
-        Warn "      failed (exit $LASTEXITCODE) - it may already exist"
+        Warn "      exit $LASTEXITCODE"
+        foreach ($line in ($out -split "`r?`n" | Where-Object { $_.Trim() })) { Warn "      $line" }
     }
 }
 
@@ -220,22 +228,27 @@ $rows | Format-Table -AutoSize
 
 if ($missing.Count) {
     Warn 'Windows did not build these devices:'
-    foreach ($d in $missing) { Warn "    $($d.Id)" }
+    foreach ($d in $missing) {
+        $c = $creation[$d.Instance]
+        Warn "    $($d.Id)  - the create tool exited $($c.Exit) and said:"
+        if ($c.Output) {
+            foreach ($line in ($c.Output -split "`r?`n" | Where-Object { $_.Trim() })) { Warn "        $line" }
+        } else {
+            Warn '        (nothing)'
+        }
+    }
     Warn ''
-    Warn 'A device is rebuilt by re-running this script once nothing is holding'
-    Warn 'the previous one. Anything still connected to its pipe counts, so stop'
-    Warn 'the emulator (and any other client) first:'
-    foreach ($d in $missing) { Warn "    okvhid-$($d.Pipe)" }
-    Warn ''
-    Warn 'setupapi.dev.log records why, searching for the hardware ID:'
+    Warn 'setupapi.dev.log records the PnP side, searched by hardware ID:'
     Warn '    notepad %SystemRoot%\inf\setupapi.dev.log'
 }
 
 $stale = $rows | Where-Object { $_.Device -eq 'not created' -and $_.State -ne 'absent' }
 if ($stale) {
     Warn ''
-    Warn 'A pipe in use with no device behind it is a client still holding the'
-    Warn 'name open. Closing that client releases it.'
+    Warn 'A pipe is being served with no device behind it, so a pipe thread has'
+    Warn 'outlived its device. It belongs to the host process, which Windows'
+    Warn 'restarts on its own for the devices that are still present:'
+    Warn '    Get-Process WUDFHost | Stop-Process -Force'
 }
 
 Write-Host ''
