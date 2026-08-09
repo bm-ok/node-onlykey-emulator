@@ -148,10 +148,33 @@ const DROP = [
  *     libraries/onlykey/okcore.h
  *         Windows flash shift: the four flash address roots move +0x10000 so
  *         the map clears Windows' reserved low 64 KB. Windows-only, gated on
- *         process.platform. Not yet promoted because it has never been
- *         compiled on Windows - the HAL still calls mmap and sigaction, and
- *         a gate in firmware for a configuration that has never run is a
- *         claim this repo cannot yet make.
+ *         process.platform.
+ *
+ *         The original note said "not yet promoted because it has never been
+ *         compiled on Windows". That is no longer true, and the evidence is
+ *         now considerably more than the note asked for:
+ *
+ *           - compiles and links on Windows (clang-cl; MSVC cannot, the
+ *             firmware uses __attribute__ in ~170 places)
+ *           - boots, provisions, and persists flash and EEPROM across a
+ *             restart. The nonce hash lands at file offset 0x3b000, which is
+ *             flash 0x4b000 = flashstorestart + 2048 with the shift applied -
+ *             exactly where the arithmetic predicts
+ *           - exercises the crypto path the shift exists to protect:
+ *             certified_hw sits at 0x15BB0 and okcrypto_split_sundae()
+ *             dereferences it on every AES-GCM operation, including storing a
+ *             PIN. Three PINs were set and survived a reboot
+ *           - FIDO2 registration and authentication complete in a browser
+ *           - OKEMU_FLASH_BASE still compiles to 0x0 off Windows (verified by
+ *             compiling ok_hal.h, not by reading it), so Linux is unchanged,
+ *             and the device .hex still builds for the MK20DX256
+ *
+ *         So the reason it is still PROVISIONAL is no longer "unproven". It
+ *         is that promoting it means editing firmware under onlykey/, which
+ *         is a swap slot and not this repo's to change - that is a deliberate
+ *         decision for a human, not something to do because a test went
+ *         green. Promote it to an `#ifdef OK_EMULATOR` gate when you want the
+ *         firmware to own it, and delete this entry then.
  */
 /*
  * Windows cannot map the flash array at its real MK20DX256 base.
