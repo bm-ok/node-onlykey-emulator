@@ -64,20 +64,19 @@ Windows able to install it; the devices are root-enumerated, so
 It finishes by reporting each interface twice — the PnP device, and its pipe:
 
 ```
-Interface                 Device      Pipe     State
-hid.usb0 keyboard         OK          okvhid-0 in use
-hid.usb1 FIDO2 / CTAP-HID OK          okvhid-1 in use
-hid.usb2 vendor protocol  not created okvhid-2 in use
-hid.usb3 SEREMU console   OK          okvhid-3 in use
+Interface                 Device Pipe     State
+hid.usb0 keyboard         OK     okvhid-0 listening
+hid.usb1 FIDO2 / CTAP-HID OK     okvhid-1 listening
+hid.usb2 vendor protocol  OK     okvhid-2 listening
+hid.usb3 SEREMU console   OK     okvhid-3 listening
 ```
 
-The two are independent, which is why they are not collapsed into one number.
-`in use` means the pipe's single instance is taken — normally by the emulator,
-and good news beside a device that is `OK`. But a client handle keeps the name
-and its busy state alive after the device behind it is gone, which is the row
-above: no `okvhid_vendor` device, and its pipe still `in use` by a client left
-over from the previous one. Closing that client is what frees the name so the
-device can be rebuilt.
+The two columns are independent, which is why they are reported side by side
+rather than scored. `listening` is a pipe with a server and nothing attached;
+it reads `in use` once the emulator connects, and both are healthy states.
+`absent` next to a device that is `OK` means the driver installed but its pipe
+thread never started, and a served pipe next to a device that is not there
+means a pipe thread outlived its device.
 
 ### After a reboot, run install-driver.ps1 again
 
