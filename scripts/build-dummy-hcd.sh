@@ -14,8 +14,9 @@
 #
 #     d.manufacturer === 'CRYPTOTRUST' && d.product === 'ONLYKEY' && d.interface === 3
 #
-# Under UHID that can never match, and nothing under onlykey/ may be modified to
-# make it match - so the emulator has to supply the fields for real.
+# Under UHID that can never match, and none of the component checkouts beside
+# this repo may be modified to make it match - so the emulator has to supply the
+# fields for real.
 #
 # Ubuntu ships `# CONFIG_USB_DUMMY_HCD is not set`, so no package provides it and
 # it has to be compiled. Everything else the gadget needs (libcomposite,

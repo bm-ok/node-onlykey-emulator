@@ -10,7 +10,7 @@
  *     cp libraries/*               -> arduino/libraries/
  *
  * We do the same into emulator/.stage, then overlay emulator/core-override/.
- * Nothing under onlykey/ is ever written to.
+ * Nothing in the component checkouts beside this repo is ever written to.
  *
  * The firmware's own host-build adaptations live in the OnlyKey sources
  * themselves, behind `#ifdef OK_EMULATOR` (defined by binding.gyp, never by the
@@ -29,11 +29,12 @@ const path = require('path');
 
 const EMU = path.resolve(__dirname, '..');
 const ROOT = path.resolve(EMU, '..');
-const OK = path.join(ROOT, 'onlykey');
-const ARDUINO = path.join(OK, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
+/* The components are checkouts beside this repo, not inside it - see setup.sh. */
+const CHECKOUTS = path.resolve(ROOT, '..');
+const ARDUINO = path.join(CHECKOUTS, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
 const CORE_SRC = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'cores', 'teensy3');
-const FW = path.join(OK, 'OnlyKey-Firmware');
-const LIB_SRC = path.join(OK, 'libraries');
+const FW = path.join(CHECKOUTS, 'OnlyKey-Firmware');
+const LIB_SRC = path.join(CHECKOUTS, 'libraries');
 const OVERRIDE = path.join(EMU, 'core-override');
 
 const STAGE = path.join(EMU, '.stage');

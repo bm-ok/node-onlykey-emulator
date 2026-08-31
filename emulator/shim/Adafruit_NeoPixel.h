@@ -7,7 +7,8 @@
  * surface and forward the resulting colour to the HAL, where the addon
  * publishes it to the UI.
  *
- * This shadows onlykey/libraries/Adafruit_NeoPixel/Adafruit_NeoPixel.h because
+ * This shadows ../libraries/Adafruit_NeoPixel/Adafruit_NeoPixel.h in the sibling
+ * checkout, because
  * emulator/shim is first on the include path - the upstream copy is untouched.
  */
 #ifndef ADAFRUIT_NEOPIXEL_H

@@ -1,20 +1,71 @@
 #!/usr/bin/env bash
 #
-# Materialises the workspace: the component checkouts under onlykey/, the Python
-# venv generated from them, and the built emulator addon.
+# Materialises the workspace: the Python venv generated from the component
+# checkouts beside this repo, and the built emulator addon.
 #
-# onlykey/ is a swap slot, not a dependency tree - see README's "Why onlykey/ is
-# not committed here". Nothing here pins a revision: every clone tracks its
-# default branch, so a component can be swapped for a different fork or revision
-# without touching this repo.
+# This repo does not contain the components - it sits beside them. The layout is
+# nine repos side by side in one folder:
 #
-# Safe to re-run: existing checkouts are left alone rather than re-cloned.
+#     <workspace>/
+#       node-onlykey-emulator/   <- this repo, where setup.sh lives
+#       arduino-1.6.5-r5-teensy_127/
+#       libraries/
+#       OnlyKey-Firmware/
+#       onlykey.github.io/
+#       lib-agent/
+#       python-onlykey/
+#       onlykey-testing/
+#       OnlyKey-App/
+#       okpqc-venv/              <- generated here, beside the repos
+#
+# Each component is a separate checkout you work on directly, and any of them can
+# be swapped wholesale - a different fork, an upstream revision, a branch under
+# test - without this repo changing. So a component that is already there is used
+# exactly as it is: nothing here fetches, pulls or re-clones into a checkout you
+# already have. Nothing pins a revision either.
+#
+# If components are missing, this script names them and stops. Pass --clone to
+# have it clone the missing ones (tracking their default branch) into that same
+# folder, beside this repo - which is how somebody who has cloned only the
+# emulator gets from there to a full workspace:
+#
+#     ./setup.sh --clone
+#
+# The venv lands beside the repos rather than inside one, so it is not sitting in
+# a git repo anybody commits from. onlykey-testing resolves it at exactly that
+# spot - its CHECKOUTS_ROOT is the parent of its own checkout.
+#
+# Safe to re-run: existing checkouts and an existing venv are left alone.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# The folder this repo is IN, holding the other eight checkouts beside it.
+CHECKOUTS="$(cd "$ROOT/.." && pwd)"
+VENV="$CHECKOUTS/okpqc-venv"
+
 AGE_VERSION="v1.2.1"
+
+usage() {
+  cat <<EOF
+usage: ./setup.sh [--clone]
+
+  --clone   clone any missing component repos into $CHECKOUTS,
+            beside this one. Without it, missing components are named
+            and setup stops. Components already present are never
+            re-fetched either way.
+EOF
+}
+
+CLONE_MISSING=0
+for arg in "$@"; do
+  case "$arg" in
+    --clone)   CLONE_MISSING=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *)         echo "!! unknown argument: $arg" >&2; echo >&2; usage >&2; exit 1 ;;
+  esac
+done
 
 # Downloads $1 to stdout with whichever fetcher this machine has. Neither is
 # guaranteed - a stock Ubuntu server has wget and no curl, and a minimal
@@ -35,7 +86,7 @@ fetch() {
 }
 
 # Check everything up front. Failing on the first missing tool beats discovering
-# it after seven clones and a venv build.
+# it after a venv build.
 missing=()
 for tool in git python3 make tar install npm node; do
   command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
@@ -49,52 +100,95 @@ if [ ${#missing[@]} -gt 0 ]; then
 fi
 
 echo "== using $FETCHER for downloads"
-
-# Clone into $2 only if it is not already there, so re-running is a no-op.
-clone() {
-  if [ -d "$2/.git" ]; then
-    echo "== $2 already present, skipping"
-  else
-    echo "== cloning $2"
-    git clone "$1" "$2"
-  fi
-}
-
-mkdir -p "$ROOT/onlykey"
-cd "$ROOT/onlykey"
+echo "== components live in $CHECKOUTS"
 
 # --- component checkouts ----------------------------------------------------
-clone https://github.com/bm-ok/arduino-1.6.5-r5-teensy_127 ./arduino-1.6.5-r5-teensy_127
-clone https://github.com/bm-ok/0c-coder-libraries          ./libraries
-clone https://github.com/bm-ok/OnlyKey-Firmware            ./OnlyKey-Firmware
-clone https://github.com/bm-ok/0c-coder-onlykey.github.io  ./onlykey.github.io
-clone https://github.com/bm-ok/0c-coder-lib-agent          ./lib-agent
-clone https://github.com/bm-ok/0c-coder-python-onlykey     ./python-onlykey
-clone https://github.com/bm-ok/onlykey-testing             ./onlykey-testing
-clone https://github.com/bm-ok/OnlyKey-App                 ./OnlyKey-App
+#
+# Directory name, then the repo it would be cloned from if it is not there. The
+# directory name is what everything downstream resolves, so a checkout under one
+# of these names is used whatever its origin - that is the swap.
+COMPONENTS=(
+  "arduino-1.6.5-r5-teensy_127 https://github.com/bm-ok/arduino-1.6.5-r5-teensy_127"
+  "libraries                   https://github.com/bm-ok/0c-coder-libraries"
+  "OnlyKey-Firmware            https://github.com/bm-ok/OnlyKey-Firmware"
+  "onlykey.github.io           https://github.com/bm-ok/0c-coder-onlykey.github.io"
+  "lib-agent                   https://github.com/bm-ok/0c-coder-lib-agent"
+  "python-onlykey              https://github.com/bm-ok/0c-coder-python-onlykey"
+  "onlykey-testing             https://github.com/bm-ok/onlykey-testing"
+  "OnlyKey-App                 https://github.com/bm-ok/OnlyKey-App"
+)
 
-git -C ./python-onlykey submodule update --init onlykey-solo-python
+absent=()
+occupied=()
+for entry in "${COMPONENTS[@]}"; do
+  read -r dir url <<<"$entry"
+  if [ -e "$CHECKOUTS/$dir/.git" ]; then
+    echo "== $dir present, using it as-is"
+  elif [ -e "$CHECKOUTS/$dir" ]; then
+    # Something is in the way that is not a checkout. Cloning would fail with
+    # git's "destination path already exists"; say what is actually wrong.
+    occupied+=("$dir")
+  else
+    absent+=("$entry")
+  fi
+done
+
+if [ ${#occupied[@]} -gt 0 ]; then
+  echo "!! these exist beside this repo but are not git checkouts:" >&2
+  for dir in "${occupied[@]}"; do echo "     $CHECKOUTS/$dir" >&2; done
+  echo "   Move or remove them, then re-run." >&2
+  exit 1
+fi
+
+if [ ${#absent[@]} -gt 0 ] && [ "$CLONE_MISSING" -eq 0 ]; then
+  echo "!! missing component checkouts, expected beside this repo in $CHECKOUTS:" >&2
+  for entry in "${absent[@]}"; do
+    read -r dir url <<<"$entry"
+    echo "     $dir  ($url)" >&2
+  done
+  echo >&2
+  echo "   Put your own checkouts there under those names, or run:" >&2
+  echo "     ./setup.sh --clone" >&2
+  echo "   to clone the missing ones. Either way the ones already there are" >&2
+  echo "   left untouched." >&2
+  exit 1
+fi
+
+for entry in "${absent[@]}"; do
+  read -r dir url <<<"$entry"
+  echo "== cloning $dir"
+  git clone "$url" "$CHECKOUTS/$dir"
+
+  # Only for what we just cloned. A checkout that was already there is used as
+  # it is, and `submodule update` in it would be a fetch into somebody's working
+  # repo. (The onlykey-solo-python dependency itself comes from PyPI; this is
+  # the source tree, and a fresh clone leaves it empty.)
+  if [ "$dir" = "python-onlykey" ]; then
+    git -C "$CHECKOUTS/$dir" submodule update --init onlykey-solo-python
+  fi
+done
 
 # --- Python venv ------------------------------------------------------------
 #
-# Generated from the checkouts above, which is why it is not committed.
-# onlykey-testing's lib/config.js resolves its tools through ./okpqc-venv/bin
-# (VENV_BIN), so all of these have to land here or tests fail in ways that look
-# like device faults rather than a missing tool.
+# Generated from the checkouts above, which is why it is not committed - and why
+# it belongs beside them rather than inside any one of them. onlykey-testing's
+# lib/cli.js resolves its tools through <checkouts>/okpqc-venv/bin (VENV_BIN), so
+# all of these have to land here or tests fail in ways that look like device
+# faults rather than a missing tool.
 echo "== provisioning okpqc-venv"
-[ -d ./okpqc-venv ] || python3 -m venv ./okpqc-venv
-./okpqc-venv/bin/pip install --upgrade pip
+[ -d "$VENV" ] || python3 -m venv "$VENV"
+"$VENV/bin/pip" install --upgrade pip
 
 #   onlykey        -> onlykey-cli, age-plugin-onlykey
 #   lib-agent      -> the agent framework
 #   onlykey-agent  -> onlykey-agent, onlykey-gpg
-./okpqc-venv/bin/pip install -e "./python-onlykey[age]"
-./okpqc-venv/bin/pip install -e ./lib-agent -e ./lib-agent/agents/onlykey
+"$VENV/bin/pip" install -e "$CHECKOUTS/python-onlykey[age]"
+"$VENV/bin/pip" install -e "$CHECKOUTS/lib-agent" -e "$CHECKOUTS/lib-agent/agents/onlykey"
 
 # age and age-keygen are upstream Go binaries. pip cannot supply them -
 # python-onlykey's [age] extra is only cryptography + kyber-py - but test/05 and
 # test/11 shell out to `age`, so fetch them into the same bin/ the tests search.
-if [ ! -x ./okpqc-venv/bin/age ]; then
+if [ ! -x "$VENV/bin/age" ]; then
   case "$(uname -m)" in
     x86_64|amd64)  AGE_ARCH=amd64 ;;
     aarch64|arm64) AGE_ARCH=arm64 ;;
@@ -105,11 +199,11 @@ if [ ! -x ./okpqc-venv/bin/age ]; then
     AGE_URL="https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/age-${AGE_VERSION}-linux-${AGE_ARCH}.tar.gz"
     tmp="$(mktemp -d)"
     fetch "$AGE_URL" | tar -xz -C "$tmp"
-    install -m 0755 "$tmp/age/age" "$tmp/age/age-keygen" ./okpqc-venv/bin/
+    install -m 0755 "$tmp/age/age" "$tmp/age/age-keygen" "$VENV/bin/"
     rm -rf "$tmp"
   else
     echo "!! unknown arch $(uname -m) - install age/age-keygen into" >&2
-    echo "   onlykey/okpqc-venv/bin by hand, or test/05 and test/11 will fail." >&2
+    echo "   $VENV/bin by hand, or test/05 and test/11 will fail." >&2
   fi
 fi
 
@@ -133,7 +227,7 @@ elif [ "$(uname -m)" != "x86_64" ] && [ ! -e /proc/sys/fs/binfmt_misc/qemu-x86_6
 else
   echo "== building the firmware toolchain image (linux/amd64)"
   DOCKER_DEFAULT_PLATFORM=linux/amd64 \
-    make -C ./arduino-1.6.5-r5-teensy_127 docker-build-toolchain
+    make -C "$CHECKOUTS/arduino-1.6.5-r5-teensy_127" docker-build-toolchain
 fi
 
 # --- node -------------------------------------------------------------------
@@ -155,13 +249,14 @@ cd "$ROOT/ui"
 npm install
 
 # The checkouts that are Node projects in their own right. None of them is a
-# workspace of this repo - they are swappable components - so each needs its own
-# install: the test kit for node-hid and the @noble crypto it verifies against,
-# the OnlyKey App for NW.js, and the web apps for their webpack build.
+# workspace of this repo - they are swappable components beside it - so each
+# needs its own install: the test kit for node-hid and the @noble crypto it
+# verifies against, the OnlyKey App for NW.js, and the web apps for their
+# webpack build.
 for pkg in onlykey-testing OnlyKey-App onlykey.github.io; do
-  if [ -f "$ROOT/onlykey/$pkg/package.json" ]; then
+  if [ -f "$CHECKOUTS/$pkg/package.json" ]; then
     echo "== installing $pkg"
-    (cd "$ROOT/onlykey/$pkg" && npm install)
+    (cd "$CHECKOUTS/$pkg" && npm install)
   fi
 done
 
