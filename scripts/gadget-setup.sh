@@ -20,7 +20,8 @@
 #
 #     d.manufacturer === 'CRYPTOTRUST' && d.product === 'ONLYKEY' && d.interface === 3
 #
-# Nothing under onlykey/ may be modified to accommodate the emulator, so the
+# None of the component checkouts beside this repo may be modified to
+# accommodate the emulator, so the
 # emulator has to supply them for real. dummy_hcd provides a virtual UDC; the
 # gadget bound to it enumerates through the kernel's USB stack as a genuine
 # device, descriptors and all.
@@ -216,7 +217,7 @@ echo "--- lsusb ---";               lsusb -d 1d50:60fc 2>&1 || true
 echo "--- as hidapi sees it ---"
 sudo -u "$TARGET_USER" "$NODE_BIN" -e '
 try {
-  const hid = require(process.argv[1] + "/onlykey/onlykey-testing/node_modules/node-hid");
+  const hid = require(process.argv[1] + "/../onlykey-testing/node_modules/node-hid");
   const all = hid.devices().filter(d => d.vendorId === 0x1d50 && d.productId === 0x60fc);
   if (!all.length) { console.log("  (no 1d50:60fc devices enumerated)"); }
   for (const d of all) {

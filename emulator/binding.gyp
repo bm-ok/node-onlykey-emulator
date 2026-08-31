@@ -38,10 +38,11 @@
       # staged Teensy core (OnlyKey USB stack + our overrides overlaid)
       ".stage/core",
 
-      # stock Arduino libraries the firmware uses
-      "../onlykey/arduino-1.6.5-r5-teensy_127/arduino-1.6.5-r5/hardware/teensy/avr/libraries/EEPROM",
-      "../onlykey/arduino-1.6.5-r5-teensy_127/arduino-1.6.5-r5/hardware/teensy/avr/libraries/Time",
-      "../onlykey/arduino-1.6.5-r5-teensy_127/arduino-1.6.5-r5/hardware/teensy/avr/libraries/ADC"
+      # stock Arduino libraries the firmware uses. Relative to emulator/, so
+      # ../.. is the folder this repo sits in, beside the component checkouts.
+      "../../arduino-1.6.5-r5-teensy_127/arduino-1.6.5-r5/hardware/teensy/avr/libraries/EEPROM",
+      "../../arduino-1.6.5-r5-teensy_127/arduino-1.6.5-r5/hardware/teensy/avr/libraries/Time",
+      "../../arduino-1.6.5-r5-teensy_127/arduino-1.6.5-r5/hardware/teensy/avr/libraries/ADC"
     ],
 
     # Same board configuration the real firmware is built with - see
