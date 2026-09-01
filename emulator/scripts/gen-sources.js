@@ -17,10 +17,11 @@ const path = require('path');
 
 const EMU = path.resolve(__dirname, '..');
 const ROOT = path.resolve(EMU, '..');
-const OK = path.join(ROOT, 'onlykey');
+/* The components are checkouts beside this repo, not inside it - see setup.sh. */
+const CHECKOUTS = path.resolve(ROOT, '..');
 const STAGE = path.join(EMU, '.stage');
 const LIB = path.join(STAGE, 'libraries');
-const ARDUINO = path.join(OK, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
+const ARDUINO = path.join(CHECKOUTS, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
 const TLIB = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries');
 const STAGE_CORE = path.join(STAGE, 'core');
 
