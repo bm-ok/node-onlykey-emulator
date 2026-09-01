@@ -136,6 +136,36 @@ if [ ! -d "/lib/modules/$(uname -r)/build" ]; then
   echo "     sudo apt install linux-headers-$(uname -r)" >&2
 fi
 
+# NW.js links libasound.so.2 and will not start without it, so a fresh minimal
+# VM image builds everything here and then cannot open a window. The LIBRARY is
+# what is tested rather than a package name, and libasound2-dev is the
+# recommendation rather than the runtime package on purpose: Ubuntu's 64-bit
+# time_t transition renamed libasound2 -> libasound2t64 (24.04+), so the old
+# name now fails with no candidate while libasound2-dev did not change and
+# depends on whichever runtime the release ships. Its headers go unused; nothing
+# in this workspace compiles against ALSA.
+if ! ldconfig -p 2>/dev/null | grep -q 'libasound\.so\.2'; then
+  echo "!! libasound.so.2 is missing - NW.js will not start without it, so both" >&2
+  echo "   the emulator GUI and the OnlyKey App fail to launch. To get it:" >&2
+  echo "     sudo apt install libasound2-dev   # survives the libasound2 -> libasound2t64 rename" >&2
+  echo "     sudo dnf install alsa-lib         # Fedora" >&2
+  echo "     sudo pacman -S alsa-lib           # Arch" >&2
+fi
+
+# The OnlyKey App draws its whole left-hand nav with LITERAL EMOJI and bundles
+# no icon font, so with no emoji font every icon above U+FFFF renders as a
+# square. What makes that read as a broken build rather than a missing system
+# font is that it is PARTIAL: the two low-codepoint symbols the DejaVu fallback
+# happens to carry, the Slots gear (U+2699) and the theme sun (U+2600), keep
+# rendering. Asked of fontconfig as "does anything cover U+1F511", a codepoint
+# the app actually uses, so no particular font or package is required.
+if command -v fc-list >/dev/null 2>&1 && ! fc-list ':charset=1F511' 2>/dev/null | grep -q .; then
+  echo "!! no emoji font found - the OnlyKey App's nav icons will render as squares." >&2
+  echo "     sudo apt install fonts-noto-color-emoji" >&2
+  echo "     sudo dnf install google-noto-emoji-color-fonts   # Fedora" >&2
+  echo "     sudo pacman -S noto-fonts-emoji                  # Arch" >&2
+fi
+
 echo "== using $FETCHER for downloads"
 echo "== components live in $CHECKOUTS"
 
@@ -374,6 +404,12 @@ command -v pm2 >/dev/null 2>&1 \
 [ -x "$NW_DIR" ] \
   && echo "   [x] nw.js SDK" \
   || echo "   [ ] nw.js MISSING - onlykey-testing sections 3 and 4 will skip"
+ldconfig -p 2>/dev/null | grep -q 'libasound\.so\.2' \
+  && echo "   [x] libasound (NW.js can start)" \
+  || echo "   [ ] libasound MISSING - no NW.js GUI starts: sudo apt install libasound2-dev"
+{ command -v fc-list >/dev/null 2>&1 && fc-list ':charset=1F511' 2>/dev/null | grep -q .; } \
+  && echo "   [x] emoji font (the App's nav icons render)" \
+  || echo "   [ ] emoji font MISSING - the App's nav icons will be squares"
 privileged_needed \
   && echo "   [ ] device access NOT set up - run: sudo ./scripts/setup-permissions.sh" \
   || echo "   [x] device access (gadget up, mmap_min_addr ok)"
