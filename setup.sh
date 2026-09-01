@@ -263,5 +263,80 @@ done
 cd "$ROOT"
 npm install
 
+# ------------------------------------------- runtime deps of the NW.js GUIs
+#
+# Two OS-level things the GUIs need that nothing above installs, both invisible
+# until you launch something. npm install fetches the NW.js binary happily
+# without either, so a setup that "succeeded" still hands you an app that will
+# not start and, if it does, has no icons. Neither is needed to BUILD anything,
+# which is exactly why they are checked here rather than in the preflight up
+# top: there is nothing to fail fast about, only something to be told.
+#
+# Printed at the END for the same reason. The preflight's rule - "failing on
+# the first missing tool beats discovering it after a venv build" - is about
+# saving time, and does not apply to a warning. What applies is being SEEN, and
+# several minutes of npm output scroll between the top of this script and the
+# prompt.
+#
+# NOT installed automatically: --clone is the only thing this script will
+# mutate outside the workspace, and it is opt-in. So these name the package the
+# way the preflight names a missing tool, and leave the decision where it
+# belongs. Both are tested by CAPABILITY rather than by package name, because
+# the package names differ per distro and, on Debian/Ubuntu, per release.
+
+runtime_notes=()
+
+# libasound2 - NW.js links libasound.so.2 and will not start without it. A
+# fresh minimal VM image routinely lacks it.
+#
+# The library is what is tested, not a package, and the recommendation is
+# `libasound2-dev` rather than the runtime package on purpose. Ubuntu's 64-bit
+# time_t transition renamed the runtime package `libasound2` -> `libasound2t64`
+# (24.04+), so `apt install libasound2` now fails outright with no candidate on
+# current releases while still being the name in every older set of
+# instructions. `libasound2-dev` did NOT change, and depends on whichever
+# runtime package this release ships - so it is the one incantation that works
+# across the rename. The headers it drags in are unused here; nothing in this
+# workspace compiles against ALSA.
+if ! ldconfig -p 2>/dev/null | grep -q 'libasound\.so\.2'; then
+  runtime_notes+=(
+    "libasound.so.2 is missing - NW.js will not start without it (the emulator GUI and the OnlyKey App)."
+    "     Debian/Ubuntu:  sudo apt install libasound2-dev   # survives the libasound2 -> libasound2t64 rename"
+    "     Fedora:         sudo dnf install alsa-lib"
+    "     Arch:           sudo pacman -S alsa-lib"
+  )
+fi
+
+# An emoji font - the OnlyKey App draws its whole left-hand nav with LITERAL
+# EMOJI. No icon font is bundled and no icon library is a dependency; the
+# glyphs are written straight into the JSX (src/App.tsx), so the app borrows
+# whatever emoji font the OS provides and ships no fallback for having none.
+#
+# Without one, every icon above U+FFFF is tofu: Setup, Keys, Backup, Firmware,
+# Preferences, Advanced and Tools all become squares. What makes that confusing
+# rather than merely ugly is that it is PARTIAL - the two low-codepoint symbols
+# the DejaVu fallback happens to carry, the Slots gear U+2699 and the theme sun
+# U+2600, keep rendering. Some icons work and some do not, which reads as a
+# broken build or a missing asset in one of these repos, and it is neither.
+#
+# Asked of fontconfig as "does anything cover U+1F511", a codepoint the app
+# actually uses, so no particular font or package is required.
+if command -v fc-list >/dev/null 2>&1 && ! fc-list ':charset=1F511' 2>/dev/null | grep -q .; then
+  runtime_notes+=(
+    "No emoji font found - the OnlyKey App's nav icons will render as squares."
+    "     Debian/Ubuntu:  sudo apt install fonts-noto-color-emoji"
+    "     Fedora:         sudo dnf install google-noto-emoji-color-fonts"
+    "     Arch:           sudo pacman -S noto-fonts-emoji"
+  )
+fi
+
+if [ ${#runtime_notes[@]} -gt 0 ]; then
+  echo >&2
+  echo "!! The workspace is built, but the GUIs need these from the OS:" >&2
+  for note in "${runtime_notes[@]}"; do
+    echo "   $note" >&2
+  done
+fi
+
 echo
 echo "Setup complete. Start the emulator with pm2 - see README's Running section."
