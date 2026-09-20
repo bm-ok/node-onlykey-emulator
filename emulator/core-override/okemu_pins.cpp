@@ -16,6 +16,40 @@
 #include <stdlib.h>
 #include "ok_hal.h"
 
+/*
+ * GIVING THE CPU BACK, WITHOUT nanosleep().
+ *
+ * This used to be `struct timespec idle = {0, us * 1000L}; nanosleep(&idle, NULL);`
+ * which is POSIX and has no Windows equivalent. Two separate things break there:
+ *
+ *  1. nanosleep() simply does not exist in the UCRT.
+ *  2. `#include <time.h>` above does not reach the CRT header at all. The
+ *     Arduino Time library is on the include path and ships `Time.h`; Windows
+ *     filesystems are case-insensitive, so <time.h> resolves to THAT, which
+ *     forwards to TimeLib.h and never declares struct timespec. The compiler
+ *     reports the confusing "variable has incomplete type 'struct timespec'"
+ *     rather than a missing header.
+ *
+ * Both vanish by not naming a POSIX sleep. The throttle only needs "yield for
+ * roughly this long"; nanosecond precision was never the point - see the
+ * comment above micros(), where 250 us sits far below a 50 ms task period.
+ */
+#ifdef _WIN32
+#include <windows.h>
+static inline void okemu_idle_us(uint32_t us) {
+  /* Sleep() takes milliseconds and rounds to the scheduler tick, so sub-tick
+   * requests become "yield the rest of this quantum" - which is exactly the
+   * intent. Never 0: Sleep(0) does not yield to a lower-priority thread. */
+  DWORD ms = (DWORD)(us / 1000);
+  Sleep(ms ? ms : 1);
+}
+#else
+static inline void okemu_idle_us(uint32_t us) {
+  struct timespec idle = { 0, (long)us * 1000L };
+  nanosleep(&idle, NULL);
+}
+#endif
+
 extern "C" {
 
 /* --------------------------------------------------------------- time */
@@ -61,8 +95,7 @@ uint32_t micros(void) {
   uint32_t now = okemu_micros();
 
   if (now - last_us < OKEMU_MICROS_THROTTLE_US) {
-    struct timespec idle = { 0, OKEMU_MICROS_THROTTLE_US * 1000L };
-    nanosleep(&idle, NULL);
+    okemu_idle_us(OKEMU_MICROS_THROTTLE_US);
     now = okemu_micros();
   }
   last_us = now;

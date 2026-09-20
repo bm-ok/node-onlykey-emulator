@@ -105,6 +105,73 @@ const PATCHES = [
        '#define __enable_irq()\t__asm__ volatile("":::"memory");'],
     ],
   },
+  {
+    /*
+     * Print::println(size_t) is ambiguous on LLP64 - i.e. on Windows.
+     *
+     * Print declares overloads up to `unsigned long` and stops. On the device
+     * and on Linux that is enough, because size_t IS unsigned long there
+     * (ILP32 and LP64 both). Windows is LLP64: long stays 32 bits and size_t
+     * is unsigned long long, which matches NONE of the overloads exactly and
+     * converts equally well to several, so the call is ambiguous:
+     *
+     *     okcrypto.cpp:1070: Serial.println(rsa.len);   // rsa.len is size_t
+     *     error: call to member function 'println' is ambiguous
+     *
+     * Twelve call sites across okcore.cpp and okcrypto.cpp, all of them debug
+     * prints. Adding the missing overloads fixes every one without touching a
+     * single call, and on Linux the new overloads are simply never selected.
+     *
+     * They narrow to unsigned long before printing. These print lengths and
+     * addresses from a 32-bit firmware, so nothing being printed can exceed
+     * 32 bits - and a println that truncates in some hypothetical future is a
+     * far smaller problem than a core that will not compile.
+     */
+    /*
+     * uECC calls uECC_point_mult() before it is declared.
+     *
+     * uECC.c:1098 calls it from inside uECC_shared_secret2(); the definition
+     * is at :1109, eleven lines later, and there is no prototype anywhere. In
+     * C89 that is legal - the compiler invents `int uECC_point_mult()`. C99
+     * dropped implicit declarations, compilers warned about it for twenty
+     * years, and clang 16 finally made it an error:
+     *
+     *     error: call to undeclared function 'uECC_point_mult'
+     *     error: conflicting types for 'uECC_point_mult'
+     *
+     * The second error is the consequence of the first: the invented `int`
+     * return type then clashes with the real `void` definition. So warning
+     * flags cannot fix this - -Wno-implicit-function-declaration silences the
+     * complaint but still invents the wrong declaration, and the conflict
+     * stands. A real prototype is the only fix.
+     *
+     * Declared immediately above the function that calls it rather than at the
+     * top of the file, so the addition sits next to what needs it and matches
+     * the definition that follows a few lines later.
+     */
+    file: 'libraries/uECC/uECC.c',
+    edits: [
+      ['int uECC_shared_secret2(const uint8_t *public_key,',
+       'void uECC_point_mult(uECC_word_t *result,\n'
+       + '                     const uECC_word_t *point,\n'
+       + '                     const uECC_word_t *scalar,\n'
+       + '                     uECC_Curve curve);\n\n'
+       + 'int uECC_shared_secret2(const uint8_t *public_key,'],
+    ],
+  },
+  {
+    file: 'core/Print.h',
+    edits: [
+      ['\tsize_t println(unsigned long n)\t\t\t{ return print(n) + println(); }',
+       '\tsize_t println(unsigned long n)\t\t\t{ return print(n) + println(); }\n'
+       + '\tsize_t println(unsigned long long n)\t\t{ return print((unsigned long)n) + println(); }\n'
+       + '\tsize_t println(long long n)\t\t\t{ return print((long)n) + println(); }'],
+      ['\tsize_t println(unsigned long n, int base)\t{ return print(n, base) + println(); }',
+       '\tsize_t println(unsigned long n, int base)\t{ return print(n, base) + println(); }\n'
+       + '\tsize_t println(unsigned long long n, int base)\t{ return print((unsigned long)n, base) + println(); }\n'
+       + '\tsize_t println(long long n, int base)\t\t{ return print((long)n, base) + println(); }'],
+    ],
+  },
 ];
 
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }

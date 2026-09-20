@@ -61,6 +61,95 @@
       # build compiles the #else branch and is unaffected. See README's
       # "Running 32-bit firmware on a 64-bit host".
       "OK_EMULATOR=1"
+    ],
+
+    "conditions": [
+      # ----------------------------------------------------------------
+      # WINDOWS: satisfy Arduino's glibc-only time_t guard.
+      #
+      # libraries/Time/TimeLib.h:19-22 reads
+      #
+      #     #if !defined(__time_t_defined)  // avoid conflict with newlib
+      #     typedef unsigned long time_t;   //    or other posix libc
+      #
+      # but __time_t_defined is not a POSIX macro - it is glibc's own
+      # internal guard. glibc is the one libc where it happens to work.
+      # The UCRT defines time_t (as __int64) and does not define that
+      # macro, so the guard fails to fire and the library redefines a
+      # type the CRT already owns:
+      #
+      #     TimeLib.h(21,23): error C2371: 'time_t': redefinition;
+      #                                    different basic types
+      #
+      # Declaring the macro satisfies the guard and leaves the CRT's
+      # time_t in place. This is the same one-line fix the Android build
+      # settled on - see ok-rn/android/okemu/CMakeLists.txt:99-109 and
+      # ok-rn/FINDING-arduino-time-host-hostile.md, which measured the
+      # identical failure against bionic.
+      #
+      # Kept as a define rather than a staged patch because the defect is
+      # in a stock Arduino library, not in OnlyKey's sources: nothing we
+      # own is edited to work around it.
+      # ----------------------------------------------------------------
+      ["OS=='win'", {
+        "defines": ["__time_t_defined"],
+
+        # --------------------------------------------------------------
+        # BUILD WITH CLANG, NOT MSVC.
+        #
+        # The firmware is written for arm-none-eabi-gcc and says so on
+        # every page: __attribute__((always_inline)), __attribute__((pure)),
+        # statement expressions, and AVR headers that redefine utoa and the
+        # eeprom_* family. MSVC rejects all of it - the first attempt here
+        # produced 28x C2059, 21x C4430, 18x C2086 and gave up with C1003.
+        #
+        # clang-cl speaks both dialects: GCC's language extensions and
+        # MSVC's command line and ABI. It ships inside Visual Studio as the
+        # "C++ Clang tools for Windows" component, so this adds no
+        # toolchain the machine did not already have.
+        #
+        # The alternative was patching 127 translation units of somebody
+        # else's firmware to please one compiler. Changing the compiler is
+        # one line and leaves the sources honest.
+        # --------------------------------------------------------------
+        "msbuild_toolset": "ClangCL",
+
+        "msvs_settings": {
+          "VCCLCompilerTool": {
+            "AdditionalOptions": [
+              # The forced include. gyp's "cflags" below are make/ninja
+              # only and are silently dropped by the MSBuild generator, so
+              # the prelude has to be named again here or every TU builds
+              # without it - see shim/okemu_prelude.h for what it fixes.
+              "/FI<(module_root_dir)/shim/okemu_prelude.h",
+
+              # 32-bit firmware on a 64-bit host: it stores pointers in
+              # unsigned long and relies on wrapping arithmetic, and the
+              # HAL backs registers and flash with mapped memory that
+              # strict aliasing would let the compiler reorder. Same two
+              # flags the Linux build passes, in clang-cl spelling.
+              "/clang:-fno-strict-aliasing",
+              "/clang:-fwrapv",
+
+              # okeeprom.c passes `int addr` to the AVR eeprom_*_byte API,
+              # whose parameters are typed uint8_t*. That is the AVR
+              # convention - the "pointer" is an address-as-integer, and the
+              # emulator's own override converts it straight back:
+              #
+              #     uint8_t eeprom_read_byte(const uint8_t *addr) {
+              #       return okemu_eeprom_read((uint32_t)(uintptr_t)addr);
+              #
+              # so nothing is dereferenced and no address is lost. clang 16
+              # promoted -Wint-conversion from a warning to an error by
+              # default, which is why this builds elsewhere and not here. /w
+              # does not cover it - a default-error is not a warning.
+              "/clang:-Wno-int-conversion",
+
+              "/w"
+            ]
+          }
+        }
+      }]
     ]
   },
 

@@ -49,4 +49,74 @@
 #define __disable_irq() __asm__ volatile("" ::: "memory")
 #define __enable_irq()  __asm__ volatile("" ::: "memory")
 
+/*
+ * vdprintf() for Windows - Print::printf()'s only dependency.
+ *
+ * Teensy's core/Print.cpp does:
+ *
+ *     int Print::printf(const char *format, ...) {
+ *         return vdprintf((int)this, format, ap);
+ *
+ * vdprintf(3) is POSIX and the UCRT has no equivalent. Note what is being
+ * passed as the file descriptor: `this`, a pointer, truncated to int. That is
+ * not a descriptor on any platform - on glibc it is simply some arbitrary
+ * number that write(2) rejects, so these calls have always failed silently
+ * rather than printed anything. The firmware does not use Print::printf; the
+ * method exists because it is part of the stock core.
+ *
+ * So the shim's job is to let the core COMPILE, not to make a broken call
+ * work. Sending the text to stderr is the one interpretation that is useful on
+ * a host if anything ever does reach it, and the bogus descriptor is ignored
+ * rather than dignified.
+ */
+#ifdef _WIN32
+#include <stdio.h>
+#include <stdarg.h>
+static inline int okemu_vdprintf(int /*fd - see above*/, const char *fmt,
+                                 va_list ap) {
+  return vfprintf(stderr, fmt, ap);
+}
+#define vdprintf okemu_vdprintf
+
+/*
+ * `uint` - a BSD spelling glibc exposes from <sys/types.h> and the UCRT does
+ * not. libraries/T3Mac/T3Mac.cpp:34 declares a local with it. It is always
+ * exactly unsigned int where it exists, so the typedef is not a guess.
+ */
+typedef unsigned int uint;
+
+/*
+ * `ssize_t` - POSIX, and the UCRT has no such name.
+ *
+ * libraries/tinycbor/open_memstream.c:42 uses it. That file is tinycbor's own
+ * replacement for open_memstream(3), which Windows also lacks, so the shim
+ * needs a shim. Windows spells the same type SSIZE_T in <BaseTsd.h>; it is
+ * `__int64` on x64, so long long is the same width and signedness.
+ *
+ * Guarded so it stands down if a Windows header gets there first - several
+ * define it and set _SSIZE_T_DEFINED when they do.
+ */
+#if !defined(_SSIZE_T_DEFINED) && !defined(ssize_t)
+typedef long long ssize_t;
+#define _SSIZE_T_DEFINED
+#endif
+#endif
+
+/*
+ * `_Bool` INSIDE C++ - a GCC extension, not a Windows gap.
+ *
+ * libraries/fido2/ctap.h:376-377 and ctap_parse.cpp:503 declare _Bool fields
+ * in headers included from C++ translation units. _Bool is a C99 keyword; in
+ * C++ the type is `bool` and the underscore spelling does not exist. GCC
+ * accepts it in C++ anyway as an extension, which is why the firmware and the
+ * Linux emulator build, and clang rejects it.
+ *
+ * Guarded on the COMPILER rather than the platform, because that is what the
+ * difference actually is - a clang build on Linux would need this too. The two
+ * types are layout-compatible, so this changes no ABI.
+ */
+#if defined(__clang__) && defined(__cplusplus)
+#define _Bool bool
+#endif
+
 #endif /* OKEMU_PRELUDE_H */
