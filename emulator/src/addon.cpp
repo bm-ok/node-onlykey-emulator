@@ -16,6 +16,10 @@
 #include <napi.h>
 
 #include <thread>
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>   /* _beginthreadex: std::thread cannot set a stack size */
+#endif
 #include <vector>
 
 #include "ok_hal.h"
@@ -121,10 +125,45 @@ Napi::Value Start(const Napi::CallbackInfo &info) {
    * exits without stop() - which is what any plain process.exit() does.
    */
   g.running = true;
+#ifdef _WIN32
+  /*
+   * THE FIRMWARE THREAD NEEDS A BIGGER STACK THAN WINDOWS HANDS OUT.
+   *
+   * std::thread takes whatever the platform gives it, and that default is not
+   * the same on both: glibc gives a new thread 8 MB, while Windows reserves
+   * whatever the host executable's PE header asks for - 1 MB for node.exe.
+   *
+   * The firmware was written for a 64 KB-RAM microcontroller and is frugal,
+   * but mbedtls is not: an RSA-2048 operation puts several mbedtls_mpi
+   * working buffers on the stack, and the FIDO2 and WebAuthn paths nest
+   * deeper still. Running the protocol section, 63 tests passed and then the
+   * device host died with exit code 3221225725 - 0xC00000FD,
+   * STATUS_STACK_OVERFLOW - part way through the WebAuthn tunnel tests.
+   *
+   * There is no portable way to set a stack size on std::thread, so Windows
+   * gets _beginthreadex, which takes one. 8 MB matches what the Linux build
+   * has always had, so this is not a new allowance - it is the same one,
+   * asked for explicitly on a platform that does not grant it by default.
+   *
+   * Detached the same way, and for the same reason: the firmware's loop()
+   * never returns, so the thread is never joined.
+   */
+  unsigned tid = 0;
+  uintptr_t h = _beginthreadex(
+      nullptr, 8u * 1024u * 1024u,
+      [](void *) -> unsigned {
+        okemu_firmware_run();   /* returns only on CPU_RESTART() */
+        g.running = false;
+        return 0;
+      },
+      nullptr, 0, &tid);
+  if (h) CloseHandle((HANDLE)h);
+#else
   std::thread([] {
     okemu_firmware_run();   /* returns only on CPU_RESTART() */
     g.running = false;
   }).detach();
+#endif
 
   return env.Undefined();
 }
