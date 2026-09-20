@@ -13,6 +13,7 @@
 #include <unistd.h>
 #endif
 #include <errno.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -289,13 +290,43 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
   bool low_mapped = true;
   size_t off = 0;
   {
-    void *wfp = mmap(nullptr, OKEMU_FLASH_SIZE, PROT_READ | PROT_WRITE,
-                     MAP_SHARED, g.flash_fd, 0);
+    /*
+     * THE ADDRESS MUST FIT IN 32 BITS.
+     *
+     * Letting Windows choose put the array at 0x0000011F_F9470000, and the
+     * firmware promptly faulted at 0xF94AB003 - which is that base plus
+     * 0x3B003, truncated to 32 bits. The firmware is 32-bit code: it stores
+     * addresses in `unsigned long`, which is 64 bits on Linux (LP64) and 32
+     * bits on Windows (LLP64), so every address it keeps loses its top half
+     * here and nowhere else. See ok-rn/FINDING-64bit-pointer-narrowing.md.
+     *
+     * Retyping the firmware's address variables would be the thorough fix and
+     * a very large patch. Putting the array below 4 GB makes the truncation a
+     * no-op instead: the value round-trips, and the firmware's arithmetic is
+     * correct as written.
+     *
+     * The search stays under 0x40000000, where the peripheral windows begin,
+     * and steps by the 64 KB allocation granularity. MapViewOfFileEx fails
+     * rather than relocating, so a success is always the address asked for.
+     */
+    void *wfp = MAP_FAILED;
+    for (uintptr_t base = 0x10000000UL; base < 0x3F000000UL; base += 0x10000UL) {
+      wfp = mmap((void *)base, OKEMU_FLASH_SIZE, PROT_READ | PROT_WRITE,
+                 MAP_SHARED, g.flash_fd, 0);
+      if (wfp != MAP_FAILED) break;
+    }
     if (wfp == MAP_FAILED) {
-      snprintf(err, errlen, "cannot map flash: %s", strerror(errno));
+      snprintf(err, errlen,
+               "cannot map flash below 4GB: %s", strerror(errno));
       return -1;
     }
     okemu_flash_base = (uintptr_t)wfp;
+    /* Relocatable mapping means a fault address says nothing on its own.
+     * OKEMU_TRACE_MAP=1 prints the origin so an access violation can be read
+     * as an offset into the firmware's own address map. */
+    if (getenv("OKEMU_TRACE_MAP"))
+      fprintf(stderr, "[okemu] flash mapped at %p (%lu KB)\n",
+              wfp, (unsigned long)(OKEMU_FLASH_SIZE / 1024));
   }
 #else
   bool low_mapped = true;

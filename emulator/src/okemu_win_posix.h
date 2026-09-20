@@ -76,9 +76,10 @@ static inline void *mmap(void *addr, size_t len, int prot, int flags,
   }
 
   /*
-   * File-backed. addr is ignored deliberately: MapViewOfFileEx could honour
-   * it, but every caller that reaches here on Windows is mapping relocatably
-   * and reads back the address we return.
+   * File-backed. A non-NULL addr is a REQUIREMENT, not a hint: it is used to
+   * place the flash array below 4 GB (see ok_hal.cpp), and a mapping that
+   * landed elsewhere would be worse than none. MapViewOfFileEx fails rather
+   * than relocating, which is the behaviour we want.
    */
   assert(fd >= 0 && "file-backed mmap needs a descriptor");
   HANDLE h = (HANDLE)_get_osfhandle(fd);
@@ -87,8 +88,9 @@ static inline void *mmap(void *addr, size_t len, int prot, int flags,
   HANDLE m = CreateFileMappingW(h, NULL, PAGE_READWRITE, 0, 0, NULL);
   if (!m) return MAP_FAILED;
 
-  void *p = MapViewOfFile(m, FILE_MAP_READ | FILE_MAP_WRITE,
-                          (DWORD)(off >> 32), (DWORD)(off & 0xFFFFFFFF), len);
+  void *p = MapViewOfFileEx(m, FILE_MAP_READ | FILE_MAP_WRITE,
+                            (DWORD)(off >> 32), (DWORD)(off & 0xFFFFFFFF), len,
+                            addr);
   /*
    * The view holds its own reference to the section, so the handle is closed
    * immediately and munmap() needs no bookkeeping to undo this.
