@@ -107,6 +107,79 @@ int restart_filter(EXCEPTION_POINTERS *ep) {
   return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/*
+ * A last-resort reporter for faults the __except below never sees.
+ *
+ * The SEH frame in okemu_firmware_run() only covers the firmware thread. A
+ * fault on the systick thread, or inside an N-API callback, unwinds past it
+ * and the process simply disappears - the test kit sees "the device host
+ * exited (code 3221225477)" and nothing else, which is 0xC0000005 and says
+ * only that SOMETHING dereferenced something.
+ *
+ * A vectored handler runs before any frame-based handler, on every thread, so
+ * it can name the address whatever faulted. It never HANDLES anything:
+ * returning EXCEPTION_CONTINUE_SEARCH leaves the __except below - and the
+ * default handler after it - to decide, so arming this changes no behaviour.
+ *
+ * Writes inside the guarded SCB page are skipped, because those are the
+ * CPU_RESTART trap doing its job and are not a crash.
+ */
+LONG CALLBACK fault_reporter(EXCEPTION_POINTERS *ep) {
+  const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+  if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  const uintptr_t at = (uintptr_t)er->ExceptionInformation[1];
+  if (at >= kSCBPage && at < kSCBPage + kPageSize)
+    return EXCEPTION_CONTINUE_SEARCH;   /* the restart trap, not a fault */
+
+  char line[256];
+  int n = snprintf(line, sizeof line,
+                   "[okemu] ACCESS VIOLATION %s %p (pc %p, thread %lu)\n",
+                   er->ExceptionInformation[0] ? "writing" : "reading",
+                   (void *)at, er->ExceptionAddress,
+                   (unsigned long)GetCurrentThreadId());
+  if (n > 0) {
+    fwrite(line, 1, (size_t)n, stderr);
+    fflush(stderr);
+    /*
+     * And to a file, if one was named. A crashing child's stderr is not
+     * reliably drained by whoever spawned it - the test kit reports only
+     * "the device host exited (code 3221225477)" and the pipe contents die
+     * with the process, which is exactly when this line is worth most.
+     */
+    const char *path = getenv("OKEMU_FAULT_LOG");
+    if (path) {
+      FILE *f = fopen(path, "a");
+      if (f) { fwrite(line, 1, (size_t)n, f); fclose(f); }
+    }
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/*
+ * Armed at LOAD, not when the firmware starts.
+ *
+ * It was first registered inside arm_restart_trap(), which runs at the top of
+ * okemu_firmware_run() - and that turned out to be too late to see the fault
+ * being chased: the device host was dying between okemu_hal_init() and the
+ * first line of the firmware, so the handler had never been installed and the
+ * report never appeared. A constructor covers the module from the moment it is
+ * loaded, which is the whole point of a reporter that never handles anything.
+ */
+__attribute__((constructor(102)))
+void okemu_arm_fault_reporter(void) {
+  AddVectoredExceptionHandler(1 /* call first */, fault_reporter);
+  /* Records that the reporter is in place, so an empty log can be told apart
+   * from a log that was never armed. */
+  const char *path = getenv("OKEMU_FAULT_LOG");
+  if (path) {
+    FILE *f = fopen(path, "a");
+    if (f) { fprintf(f, "[okemu] fault reporter armed (pid %lu)\n",
+                     (unsigned long)GetCurrentProcessId()); fclose(f); }
+  }
+}
+
 void arm_restart_trap() {
   DWORD old;
   VirtualProtect((void *)kSCBPage, kPageSize, PAGE_READONLY, &old);
