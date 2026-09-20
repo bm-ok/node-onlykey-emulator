@@ -36,12 +36,44 @@
  */
 #ifdef _WIN32
 #include <windows.h>
+/*
+ * NOT Sleep(). Sleep(1) is not one millisecond.
+ *
+ * The throttle asks for 250 us. Sleep() takes whole milliseconds and rounds
+ * up to the scheduler tick, which by default is 15.6 ms - so Sleep(1) parks
+ * this thread about sixty times longer than asked, on a function the
+ * SoftTimer scheduler calls for every task on every pass. The first version
+ * of this file did exactly that and the emulator was too slow to finish
+ * booting: the firmware got as far as touch calibration and the test kit gave
+ * up after 15 s waiting for it to start reading its debug console.
+ *
+ * A high-resolution waitable timer takes its due time in 100 ns units and
+ * honours it, so 250 us really is 250 us. It needs Windows 10 1803 or newer;
+ * if creation fails, SwitchToThread() at least hands the core to anything
+ * else that is ready, which is what the throttle is for.
+ *
+ * The handle is created once and reused - the firmware runs on a single
+ * thread, so no synchronisation is needed around it.
+ */
 static inline void okemu_idle_us(uint32_t us) {
-  /* Sleep() takes milliseconds and rounds to the scheduler tick, so sub-tick
-   * requests become "yield the rest of this quantum" - which is exactly the
-   * intent. Never 0: Sleep(0) does not yield to a lower-priority thread. */
-  DWORD ms = (DWORD)(us / 1000);
-  Sleep(ms ? ms : 1);
+  static HANDLE timer = NULL;
+  static bool tried = false;
+  if (!tried) {
+    tried = true;
+    timer = CreateWaitableTimerExW(
+        NULL, NULL,
+        CREATE_WAITABLE_TIMER_MANUAL_RESET | CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+        TIMER_ALL_ACCESS);
+  }
+  if (timer) {
+    LARGE_INTEGER due;
+    due.QuadPart = -(LONGLONG)us * 10;   /* negative = relative, 100 ns units */
+    if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+      WaitForSingleObject(timer, INFINITE);
+      return;
+    }
+  }
+  SwitchToThread();
 }
 #else
 static inline void okemu_idle_us(uint32_t us) {
