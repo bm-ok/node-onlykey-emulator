@@ -397,7 +397,32 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
    * (device-key derivation + fw_hash + lock). That path is only safe when the
    * whole flash array including fwstartadr (0x6060) is mapped.
    */
+#ifdef _WIN32
+  /*
+   * ALREADY PROVISIONED, EVERY BOOT.
+   *
+   * FSEC is a flash-controller register: on hardware it is persistent, and
+   * the firmware writes it once during provisioning so the one-time path
+   * never runs again. Here it is plain mapped memory that starts fresh with
+   * the process, so whatever we put in it is what the firmware believes on
+   * EVERY boot - it cannot latch.
+   *
+   * low_mapped is true on Windows, because the whole 256 KB really is mapped.
+   * Taking the 0xFF branch therefore sent the firmware through one-time
+   * provisioning after every restart, which wipes the device: the test kit's
+   * fixture set three PINs, rebooted to load them, and the device came back
+   * UNLOCKED, NO PIN SET.
+   *
+   * 0x44 is what Linux uses at the 'crypto' rung and what every fixture in
+   * the kit is written against. The cost is that the provisioning branch is
+   * not exercised here - fw-hash and attestation - which is exactly the
+   * trade Linux already makes, and capabilities.js reports this host as
+   * 'crypto' for that reason.
+   */
+  *(volatile uint8_t *)kFTFL_FSEC = 0x44;
+#else
   *(volatile uint8_t *)kFTFL_FSEC = low_mapped ? 0xFF : 0x44;
+#endif
 
   okemu_time_start();
   okemu_systick_start();   /* millis() must advance without the firmware asking */
