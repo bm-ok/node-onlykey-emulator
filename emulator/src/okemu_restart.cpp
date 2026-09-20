@@ -22,12 +22,16 @@
  * unprotect the page and let the store retry so the firmware keeps running.
  */
 #include <signal.h>
+#ifdef _WIN32
+#include "okemu_win_posix.h"   /* backtrace, mmap, ... */
+#else
 #include <execinfo.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include <stdlib.h>
 #include <time.h>
 #include <setjmp.h>
-#include <sys/mman.h>
-#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -43,12 +47,83 @@ const uintptr_t kAIRCR     = 0xE000ED0CUL;
 const size_t    kPageSize  = 4096;
 const uintptr_t kSCBPage   = kAIRCR & ~(uintptr_t)(kPageSize - 1);
 
+okemu_event_sink g_restart_fn  = nullptr;
+void            *g_restart_ctx = nullptr;
+
+#ifdef _WIN32
+
+volatile long g_armed = 0;
+
+/*
+ * The same three-way decision as the POSIX handler below, expressed as a
+ * Structured Exception filter.
+ *
+ * Windows has no equivalent of longjmp-ing out of a fault handler - on x64
+ * the unwinder owns that path and siglongjmp's trick is not available. SEH
+ * makes the park unnecessary instead: returning EXCEPTION_EXECUTE_HANDLER
+ * transfers to the __except block in okemu_firmware_run(), which is exactly
+ * where sigsetjmp() was waiting. The other two verdicts have direct
+ * equivalents: CONTINUE_EXECUTION retries the faulting store after we widen
+ * the protection, and CONTINUE_SEARCH lets a genuine crash reach the
+ * debugger and the default handler, as the POSIX path does by restoring
+ * g_prev_segv.
+ */
+int restart_filter(EXCEPTION_POINTERS *ep) {
+  const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+  if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  /* [0] is read/write/execute, [1] is the address touched. */
+  const uintptr_t at = (uintptr_t)er->ExceptionInformation[1];
+
+  if (g_armed && at >= kAIRCR && at < kAIRCR + 4) {
+    if (getenv("OKEMU_TRACE_RESTART")) {
+      fprintf(stderr, "\n[okemu] CPU_RESTART() from:\n");
+      void *frames[24];
+      int depth = backtrace(frames, 24);
+      /* No backtrace_symbols_fd here: resolving names would mean DbgHelp and
+       * a symbol path. Raw addresses still identify the site against a map. */
+      for (int i = 0; i < depth; i++) fprintf(stderr, "  %p\n", frames[i]);
+      fflush(stderr);
+    }
+    okemu_request_restart();
+    return EXCEPTION_EXECUTE_HANDLER;
+  }
+
+  if (at >= kSCBPage && at < kSCBPage + kPageSize) {
+    /* Some other Cortex-M system register. Let the write through. */
+    DWORD old;
+    VirtualProtect((void *)kSCBPage, kPageSize, PAGE_READWRITE, &old);
+    return EXCEPTION_CONTINUE_EXECUTION;
+  }
+
+  fprintf(stderr, "\n[okemu] FATAL: access violation at %p\n", (void *)at);
+  {
+    void *frames[32];
+    int depth = backtrace(frames, 32);
+    for (int i = 0; i < depth; i++) fprintf(stderr, "  %p\n", frames[i]);
+  }
+  fflush(stderr);
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void arm_restart_trap() {
+  DWORD old;
+  VirtualProtect((void *)kSCBPage, kPageSize, PAGE_READONLY, &old);
+  g_armed = 1;
+}
+
+void disarm_restart_trap() {
+  DWORD old;
+  g_armed = 0;
+  VirtualProtect((void *)kSCBPage, kPageSize, PAGE_READWRITE, &old);
+}
+
+#else
+
 sigjmp_buf         g_park;
 volatile sig_atomic_t g_armed = 0;
 struct sigaction   g_prev_segv;
-
-okemu_event_sink g_restart_fn  = nullptr;
-void            *g_restart_ctx = nullptr;
 
 void segv_handler(int sig, siginfo_t *info, void *uctx) {
   const uintptr_t at = (uintptr_t)info->si_addr;
@@ -115,6 +190,8 @@ void arm_restart_trap() {
   g_armed = 1;
 }
 
+#endif /* _WIN32 */
+
 }  // namespace
 
 extern "C" {
@@ -123,6 +200,37 @@ void okemu_set_restart_sink(okemu_event_sink fn, void *ctx) {
   g_restart_fn = fn;
   g_restart_ctx = ctx;
 }
+
+#ifdef _WIN32
+
+/*
+ * The firmware body, separated out so okemu_firmware_run() can wrap it in
+ * __try/__except. clang-cl refuses SEH in a function that also needs C++
+ * object unwinding, and keeping the two apart makes that impossible to
+ * violate by accident later.
+ */
+static void firmware_body(void) {
+  setup();
+  for (;;) {
+    loop();
+    okemu_sync_systick();
+  }
+}
+
+void okemu_firmware_run(void) {
+  arm_restart_trap();
+
+  __try {
+    firmware_body();
+  } __except (restart_filter(GetExceptionInformation())) {
+    /* Arrived from the AIRCR trap: the firmware asked to reboot. */
+    disarm_restart_trap();
+    okemu_hal_shutdown();
+    if (g_restart_fn) g_restart_fn(g_restart_ctx);
+  }
+}
+
+#else
 
 void okemu_firmware_run(void) {
   if (sigsetjmp(g_park, 1) != 0) {
@@ -150,5 +258,7 @@ void okemu_firmware_run(void) {
      */
   }
 }
+
+#endif /* _WIN32 */
 
 }  // extern "C"

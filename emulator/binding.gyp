@@ -41,7 +41,9 @@
       # stock Arduino libraries the firmware uses. Relative to emulator/, so
       # ../.. is the folder this repo sits in, beside the component checkouts.
       "../../arduino-1.6.5-r5-teensy_127/arduino-1.6.5-r5/hardware/teensy/avr/libraries/EEPROM",
-      "../../arduino-1.6.5-r5-teensy_127/arduino-1.6.5-r5/hardware/teensy/avr/libraries/Time",
+      # Time is STAGED (with Time.h removed) rather than used from the
+      # Arduino checkout - see scripts/stage.js defuseTimeHeader().
+      ".stage/libraries/Time",
       "../../arduino-1.6.5-r5-teensy_127/arduino-1.6.5-r5/hardware/teensy/avr/libraries/ADC"
     ],
 
@@ -94,6 +96,10 @@
       ["OS=='win'", {
         "defines": ["__time_t_defined"],
 
+        # bcrypt: BCryptGenRandom, the platform CSPRNG that stands in for
+        # /dev/urandom in okemu_random_bytes(). See src/okemu_win_posix.h.
+        "libraries": ["-lbcrypt"],
+
         # --------------------------------------------------------------
         # BUILD WITH CLANG, NOT MSVC.
         #
@@ -115,7 +121,29 @@
         "msbuild_toolset": "ClangCL",
 
         "msvs_settings": {
+          # node-gyp's common.gypi turns on whole-program optimisation for
+          # Release, which makes MSBuild pass /LTCG:INCREMENTAL to the
+          # librarian. llvm-lib does not implement that flag and reads it as a
+          # filename - "/LTCG:INCREMENTAL: no such file or directory" - so the
+          # library step fails after every object has compiled cleanly.
+          # LTCG buys nothing here: this is a firmware emulator whose hot loop
+          # is a 50 ms scheduler tick.
+          # The "!" suffix is gyp's list SUBTRACTION: it removes the entry
+          # addon.gypi added, which a plain assignment cannot do because gyp
+          # merges lists by appending. Setting node_with_ltcg=false on the
+          # command line does not work either - node-gyp records it as a
+          # literal "Dnode_with_ltcg" key and the real variable stays true.
+          "VCLibrarianTool": {
+            "AdditionalOptions!": ["/LTCG:INCREMENTAL"],
+            "LinkTimeCodeGeneration": "false"
+          },
+          "VCLinkerTool": {
+            "AdditionalOptions!": ["/LTCG:INCREMENTAL"],
+            "LinkTimeCodeGeneration": 0
+          },
+
           "VCCLCompilerTool": {
+            "WholeProgramOptimization": "false",
             "AdditionalOptions": [
               # The forced include. gyp's "cflags" below are make/ninja
               # only and are silently dropped by the MSBuild generator, so
@@ -196,7 +224,12 @@
       "dependencies": ["okemu_firmware"],
 
       "include_dirs": [
-        "<!@(node -p \"require('node-addon-api').include_dir\")"
+        # split/join on path.sep, so the path arrives with forward slashes.
+        # On Windows include_dir is "node_modules\node-addon-api" and gyp
+        # reads that backslash as an escape, yielding
+        # "..\node_modulesnode-addon-api" and a napi.h that cannot be found.
+        # Written without any literal backslash here, for the same reason.
+        "<!@(node -p \"require('node-addon-api').include_dir.split(require('path').sep).join('/')\")"
       ],
       "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
       "cflags_cc": ["-std=gnu++17", "-fexceptions"],

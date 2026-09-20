@@ -160,6 +160,198 @@ const PATCHES = [
     ],
   },
   {
+    /*
+     * Rebase the firmware's flash addresses onto OKEMU_FLASH_BASE.
+     *
+     * The firmware reads its own storage through raw pointers at absolute
+     * addresses, which works on Linux because the HAL maps the flash array at
+     * address 0 - the MK20DX256's real base. Windows reserves the bottom 64 KB
+     * of every process, cannot be persuaded otherwise, and the next rung up
+     * leaves certified_hw at 0x5BB0 unmapped, which faults on the first
+     * AES-GCM operation. See ok_hal.h.
+     *
+     * So the origin moves instead. Only four literals exist; everything else
+     * in okcore.h derives from them, and every offset and every difference
+     * between them is unchanged. On Windows OKEMU_FLASH_BASE is a variable the
+     * HAL sets once at init, declared in ok_hal.h.
+     *
+     * The trailing `//22528 - 23551` on factorysectoradr is deliberately NOT
+     * part of the pattern: older firmware releases define the same address
+     * with no comment, and a pattern carrying the comment would miss on those
+     * while the other three still applied - leaving one address unrebased in a
+     * tree that otherwise looks fine. Matching the define alone applies
+     * everywhere, and any existing comment simply trails the replacement,
+     * which is still valid C.
+     */
+    platform: 'win32',
+    file: 'libraries/onlykey/okcore.h',
+    edits: [
+      ['#define factorysectoradr 0x5800',
+       '#define factorysectoradr (OKEMU_FLASH_BASE + 0x5800)'],
+      ['#define fwstartadr 0x6060',
+       '#define fwstartadr (OKEMU_FLASH_BASE + 0x6060)'],
+      ['#define flashstorestart 0x3A800',
+       '#define flashstorestart (OKEMU_FLASH_BASE + 0x3A800)'],
+      ['#define flashend 0x3FFFF',
+       '#define flashend (OKEMU_FLASH_BASE + 0x3FFFF)'],
+    ],
+  },
+  {
+    /*
+     * Declarations that disagree with their definitions.
+     *
+     * The MSVC ABI mangles a global variable's TYPE and LINKAGE into its
+     * symbol; the Itanium ABI used on ARM and Linux mangles neither, so a
+     * global's symbol is just its name and a wrong declaration still links.
+     * These are the ones lld-link caught, each verified against the built
+     * objects with llvm-nm rather than assumed:
+     *
+     *   KeyboardLayout   defined  B KeyboardLayout        C linkage
+     *   keyboard_buffer  defined  B keyboard_buffer       C linkage
+     *   setBuffer        defined  B setBuffer             C linkage
+     *   Profile_Offset   defined  B ?Profile_Offset@@3HA  C++, and it is INT
+     *   outputmode       defined  B ?outputmode@@3HA      C++, and it is INT
+     *
+     * The int/uint8_t pairs are the interesting ones: Profile_Offset is
+     * `int Profile_Offset = 0` in okcore.cpp:106, yet password.cpp declares it
+     * uint8_t on lines 126 and 296 and int on line 128 - three declarations,
+     * two of them wrong, two lines apart. On a little-endian target reading
+     * the low byte of an int usually gives the right answer, which is why this
+     * has never been noticed.
+     *
+     * okpqc.cpp carries a comment about exactly this hazard: a
+     * packet_buffer_details declared uint32_t against a uint8_t definition
+     * gave the wrong stride and produced two confirmed hardware failures. Same
+     * class of defect; this time a linker found it first.
+     *
+     * Windows-scoped for now - all five belong upstream, where fixing them
+     * costs nothing on any target and removes a real trap.
+     */
+    platform: 'win32',
+    file: 'libraries/onlykey/okcrypto.cpp',
+    edits: [
+      /*
+       * setBuffer is declared inside a function at :855, and a linkage
+       * specification may only appear at namespace scope - `extern "C"` there
+       * is a syntax error. Declaring it once up here instead is enough: the
+       * block-scope `extern` at :855 then redeclares an entity that already
+       * has C linkage and inherits it, so that line needs no edit at all.
+       */
+      ['extern uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];',
+       'extern "C" uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];  /* C linkage: stage.js */\n'
+       + 'extern "C" uint8_t setBuffer[9];  /* ditto; declared in-function at :855 */'],
+      ['extern uint8_t outputmode;',
+       'extern int outputmode;   /* okcore.cpp:276 defines it int - stage.js */'],
+    ],
+  },
+  {
+    platform: 'win32',
+    file: 'libraries/onlykey/okcore.cpp',
+    edits: [
+      ['extern uint8_t KeyboardLayout[1];',
+       'extern "C" uint8_t KeyboardLayout[1];  /* keylayouts.c is C - stage.js */'],
+    ],
+  },
+  {
+    platform: 'win32',
+    file: 'libraries/password/password.cpp',
+    /* Both occurrences; line 128 already says int and needs no edit. */
+    edits: [
+      ['\textern uint8_t Profile_Offset;',
+       '\textern int Profile_Offset;   /* okcore.cpp:106 defines it int - stage.js */'],
+    ],
+  },
+  {
+    platform: 'win32',
+    file: 'sketch/OnlyKey.ino',
+    edits: [
+      ['extern uint8_t Profile_Offset;',
+       'extern int Profile_Offset;   /* okcore.cpp:106 defines it int - stage.js */'],
+      ['extern uint8_t KeyboardLayout[1];',
+       'extern "C" uint8_t KeyboardLayout[1];  /* keylayouts.c is C - stage.js */'],
+      ['extern uint8_t outputmode;',
+       'extern int outputmode;   /* okcore.cpp:276 defines it int - stage.js */'],
+    ],
+  },
+  {
+    /*
+     * okpqc.cpp declares firmware globals without extern "C".
+     *
+     * Lines 49-70 declare rsa_private_key, large_buffer_offset, outputmode and
+     * friends as plain C++ externs. The definitions in okcore.cpp have C
+     * linkage, so the names do not match - but only on an ABI that MANGLES
+     * VARIABLES. The Itanium C++ ABI does not: a global's symbol is just its
+     * name, so ARM and Linux link this happily. MSVC does mangle them, and
+     * lld-link reports what was always true:
+     *
+     *     undefined symbol: int large_buffer_offset
+     *       referenced by okpqc.obj          (?large_buffer_offset@@3HA)
+     *       defined in    okcore.obj          (large_buffer_offset)
+     *
+     * The file already spells its FUNCTION imports `extern "C"` a few lines
+     * above; the variables were simply missed. Note the comment already in
+     * this block about packet_buffer_details, where a declaration that
+     * disagreed with its definition produced two confirmed hardware failures -
+     * this is the same hazard, caught by a linker instead of by a user.
+     *
+     * Scoped to Windows only because the Linux build has been shipping this
+     * way for years and this patch is not the place to change it. It belongs
+     * upstream in okpqc.cpp for every target.
+     */
+    platform: 'win32',
+    file: 'libraries/onlykey/okpqc.cpp',
+    edits: [
+      /*
+       * ONLY these two. The definitions in okcore.cpp are not consistent with
+       * one another - llvm-nm on the built objects says so plainly:
+       *
+       *   large_buffer_offset    B large_buffer_offset         <- C linkage
+       *   CRYPTO_AUTH            B CRYPTO_AUTH                 <- C linkage
+       *   outputmode             B ?outputmode@@3HA            <- C++
+       *   large_buffer           D ?large_buffer@@3PEAEEA      <- C++
+       *   ... and six more, all C++
+       *
+       * so a blanket extern "C" over the whole block only moves the failure
+       * to the other eight. Each declaration has to match the linkage of the
+       * definition it names, and these are the two that are C.
+       */
+      ['extern int      large_buffer_offset;',
+       'extern "C" int  large_buffer_offset;   /* C linkage: see stage.js */'],
+      ['extern uint8_t  CRYPTO_AUTH;',
+       'extern "C" uint8_t CRYPTO_AUTH;        /* C linkage: see stage.js */'],
+    ],
+  },
+  {
+    /*
+     * OnlyKey.ino provides newlib syscall stubs - _getpid, _kill, _write - so
+     * that a bare-metal link resolves them. Nothing in the firmware calls any
+     * of them; they exist to satisfy newlib.
+     *
+     * Against a real libc they are redundant, and _write collides outright:
+     *
+     *     lld-link: error: duplicate symbol: _write
+     *       defined at .stage/sketch/OnlyKey.ino:246
+     *       defined at libucrt.lib(write.obj)
+     *
+     * This is the same shape as the recvmsg collision binding.gyp describes -
+     * firmware written for a freestanding target reusing names libc owns. On
+     * Linux -Bsymbolic resolves it at link time; the Windows toolchain has no
+     * equivalent because it never had the problem, so the fix is to stop
+     * defining the symbol.
+     *
+     * Renamed rather than deleted, so the stub stays visible next to its two
+     * siblings and nothing looks mysteriously absent. Scoped to Windows
+     * because only the UCRT collides - glibc's _write is resolved by
+     * -Bsymbolic and the Linux build has been shipping this way for years.
+     */
+    platform: 'win32',
+    file: 'sketch/OnlyKey.ino',
+    edits: [
+      ['  int _write(){return -1;}',
+       '  int okemu_unused_write(){return -1;}  /* renamed: see stage.js */'],
+    ],
+  },
+  {
     file: 'core/Print.h',
     edits: [
       ['\tsize_t println(unsigned long n)\t\t\t{ return print(n) + println(); }',
@@ -173,6 +365,52 @@ const PATCHES = [
     ],
   },
 ];
+
+/*
+ * Remove Arduino's Time.h from the include path.
+ *
+ * The Time library ships two headers: TimeLib.h, which has the content, and
+ * Time.h, which is one line - `#include "TimeLib.h"`. Its directory has to be
+ * on the include path because the firmware includes "Time.h" from several
+ * places.
+ *
+ * On a case-insensitive filesystem - Windows and macOS both - that makes
+ * `#include <time.h>` resolve to Arduino's Time.h rather than the C library's,
+ * because -I directories are searched before the sysroot. struct timespec then
+ * never gets declared, <ctime> finds none of the C time functions, and every
+ * file in the HAL that sleeps or reads the clock fails to compile. Linux never
+ * sees this, which is why this built there for years and not here.
+ *
+ * Deleting the one-line shim and pointing its consumers straight at TimeLib.h
+ * removes the collision for good rather than per-file. Done on every platform:
+ * the result is identical code, and a Linux-only spelling would mean the two
+ * trees drift.
+ *
+ * Ported from ok-rn/android/okemu/scripts/stage.js, which hit this first while
+ * building for Android from a Windows host.
+ */
+function defuseTimeHeader() {
+  const shim = path.join(STAGE_LIB, 'Time', 'Time.h');
+  if (fs.existsSync(shim)) fs.rmSync(shim);
+
+  let rewritten = 0;
+  const re = /(#\s*include\s*)(["<])Time\.h([">])/g;
+
+  const walkAll = (dir) => {
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) { walkAll(p); continue; }
+      if (!/\.(c|cpp|h|hpp|ino)$/.test(ent.name)) continue;
+      const text = fs.readFileSync(p, 'utf8');
+      if (!re.test(text)) { re.lastIndex = 0; continue; }
+      re.lastIndex = 0;
+      fs.writeFileSync(p, text.replace(re, '$1$2TimeLib.h$3'));
+      rewritten++;
+    }
+  };
+  walkAll(STAGE);
+  return rewritten;
+}
 
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
 
@@ -190,6 +428,13 @@ function copyDir(src, dst) {
 function applyPatches() {
   let applied = 0, missing = 0;
   for (const p of PATCHES) {
+    /*
+     * A patch may be scoped to one host platform. Used sparingly - a fix that
+     * is correct everywhere should apply everywhere, so the trees do not
+     * drift - but some collisions only exist against one libc, and silently
+     * changing the Linux build to fix Windows would be worse than the drift.
+     */
+    if (p.platform && p.platform !== process.platform) continue;
     const target = path.join(STAGE, p.file);
     if (!fs.existsSync(target)) {
       console.error(`stage: WARNING - patch file absent: ${p.file}`);
@@ -261,6 +506,16 @@ function main() {
   copyDir(LIB_SRC, STAGE_LIB);
   copyDir(path.join(FW, 'OnlyKey'), STAGE_SKETCH);
 
+  /*
+   * Arduino's Time library is staged rather than included from the Arduino
+   * checkout, so that defuseTimeHeader() below has somewhere to delete Time.h
+   * from. Leaving it in place would mean editing the Arduino tree, which is
+   * shared with every other build on this machine.
+   */
+  copyDir(path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries', 'Time'),
+          path.join(STAGE_LIB, 'Time'));
+  const timeRepointed = defuseTimeHeader();
+
   // 6. documented source-level fixups
   const patched = applyPatches();
 
@@ -269,6 +524,8 @@ function main() {
     `  core files overlaid from OnlyKey-Firmware: ${overlaid}\n` +
     `  emulator overrides applied:                ${overrides}\n` +
     `  bare-metal files dropped:                  ${dropped}\n` +
+    `  Time.h consumers repointed at TimeLib.h:   ${timeRepointed}
+` +
     `  source patches applied:                    ${patched}`
   );
 }

@@ -86,6 +86,29 @@ static inline int okemu_vdprintf(int /*fd - see above*/, const char *fmt,
 typedef unsigned int uint;
 
 /*
+ * Where the emulated flash array lives, on Windows.
+ *
+ * OKEMU_FLASH_BASE is the NAME OF THIS VARIABLE, not an address - Windows
+ * chooses where the 256 KB lands and okemu_hal_init() records it. stage.js
+ * rewrites okcore.h's four address literals as OKEMU_FLASH_BASE + offset, and
+ * okcore.h includes nothing of ours, so the declaration has to arrive through
+ * this prelude, which is force-included into every translation unit.
+ *
+ * ok_hal.h spells the same macro identically, which the standard permits: a
+ * macro may be redefined with the same token sequence. Both are kept, so
+ * neither file depends on the other having been included first.
+ */
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern uintptr_t okemu_flash_base;
+#ifdef __cplusplus
+}
+#endif
+#define OKEMU_FLASH_BASE okemu_flash_base
+
+/*
  * `ssize_t` - POSIX, and the UCRT has no such name.
  *
  * libraries/tinycbor/open_memstream.c:42 uses it. That file is tinycbor's own

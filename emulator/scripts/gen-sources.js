@@ -90,7 +90,7 @@ for (const d of LIB_DIRS) walk(path.join(LIB, d), false, sources);
 walk(path.join(LIB, 'onlykey', 'utility'), false, sources);
 
 /* 4. Arduino Time library (firmware calls now()) */
-walk(path.join(TLIB, 'Time'), false, sources);
+walk(path.join(LIB, 'Time'), false, sources);  /* staged: see stage.js defuseTimeHeader() */
 
 const rel = sources
   .map((p) => path.relative(EMU, p))

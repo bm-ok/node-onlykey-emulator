@@ -3,10 +3,15 @@
  */
 #include "ok_hal.h"
 
+#ifdef _WIN32
+#include "okemu_win_posix.h"   /* mmap, open, ftruncate, nanosleep, ... */
+#include <sys/stat.h>
+#else
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -20,6 +25,15 @@
 #include <deque>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+/*
+ * Where the flash array landed. Declared in ok_hal.h, which every
+ * firmware translation unit reaches, because okcore.h's rebased address
+ * constants name it and okcore.h includes nothing of ours.
+ */
+extern "C" uintptr_t okemu_flash_base = 0;
+#endif
 
 namespace {
 
@@ -256,6 +270,34 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
    * address we asked for, and anything else is unmapped and treated as a
    * failure.
    */
+#ifdef _WIN32
+  /*
+   * WINDOWS PICKS THE ADDRESS AND WE TELL THE FIRMWARE WHICH.
+   *
+   * None of the rungs below are reachable here: the bottom 64 KB of every
+   * Win32 process is the permanently reserved null-pointer guard, so 0 and
+   * 0x1000 cannot be mapped at all, and 0x10000 is the rung the warning below
+   * describes - certified_hw at 0x5BB0 unmapped, and every AES-GCM operation
+   * faulting.
+   *
+   * Mapping relocatably removes the whole question. OKEMU_FLASH_BASE is a
+   * variable on this platform (see ok_hal.h) and the firmware's four address
+   * literals are rewritten as OKEMU_FLASH_BASE + offset by stage.js, so the
+   * layout is identical and only the origin moves. Nothing is ever partially
+   * mapped, so the degraded mode - and the warning - cannot arise.
+   */
+  bool low_mapped = true;
+  size_t off = 0;
+  {
+    void *wfp = mmap(nullptr, OKEMU_FLASH_SIZE, PROT_READ | PROT_WRITE,
+                     MAP_SHARED, g.flash_fd, 0);
+    if (wfp == MAP_FAILED) {
+      snprintf(err, errlen, "cannot map flash: %s", strerror(errno));
+      return -1;
+    }
+    okemu_flash_base = (uintptr_t)wfp;
+  }
+#else
   bool low_mapped = true;
   size_t off = 0;
   void *fp = mmap((void *)OKEMU_FLASH_BASE, OKEMU_FLASH_SIZE,
@@ -309,6 +351,7 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
               (unsigned long)off);
     }
   }
+#endif /* _WIN32 */
   g.flash = (uint8_t *)OKEMU_FLASH_BASE;
   g.flash_mapped_off = off;
 
@@ -597,6 +640,27 @@ void okemu_eeprom_write(uint32_t addr, uint8_t v) {
 /* ----------------------------------------------------------- entropy */
 
 void okemu_random_bytes(uint8_t *out, size_t len) {
+#ifdef _WIN32
+  /*
+   * WINDOWS HAS NO /dev/urandom, AND THE FALLBACK BELOW IS NOT AN RNG.
+   *
+   * The POSIX path treats a missing /dev/urandom as pathological and degrades
+   * to now_us() smeared across the buffer. On Linux that branch is genuinely
+   * unreachable. On Windows the open() could never succeed, so every call
+   * would take it - and this function feeds key generation. Timestamp bytes
+   * as key material is not a degraded mode, it is a broken device that still
+   * answers.
+   *
+   * BCryptGenRandom with USE_SYSTEM_PREFERRED_RNG is the platform CSPRNG and
+   * needs no algorithm handle. If it ever fails there is nothing safe left to
+   * do, so abort rather than return something that looks like entropy.
+   */
+  if (BCryptGenRandom(NULL, out, (ULONG)len,
+                      BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0)
+    return;
+  fprintf(stderr, "[okemu] BCryptGenRandom failed - refusing to invent entropy\n");
+  abort();
+#else
   static int fd = -1;
   if (fd < 0) fd = ::open("/dev/urandom", O_RDONLY);
   if (fd >= 0) {
@@ -612,6 +676,7 @@ void okemu_random_bytes(uint8_t *out, size_t len) {
    * pathological fd exhaustion so the caller still gets varying bytes. */
   for (size_t i = 0; i < len; i++)
     out[i] = (uint8_t)(now_us() >> ((i % 8) * 8));
+#endif
 }
 
 }  // extern "C"

@@ -25,7 +25,35 @@ extern "C" {
 
 /* ---------------------------------------------------------------- layout */
 
+/*
+ * Where the emulated flash array lives.
+ *
+ * On Linux it is the MK20DX256's real address, 0, so the firmware's own
+ * constants (fwstartadr 0x6060, certified_hw 0x5BB0, storage 0x3A800) are
+ * correct exactly as written and nothing needs rebasing.
+ *
+ * Windows reserves the bottom 64 KB of every process's address space as the
+ * null-pointer guard, with no equivalent of vm.mmap_min_addr to lower - so
+ * address 0 is unobtainable, and so is the 0x1000 fallback. The 0x10000 rung
+ * is allocatable but is the one ok_hal.cpp's own comment says leaves
+ * certified_hw unmapped, which segfaults the device on its first AES-GCM
+ * operation.
+ *
+ * So on Windows this is the NAME OF A VARIABLE, not an address: the kernel
+ * chooses where the 256 KB lands and okemu_hal_init() records it here. The
+ * firmware's four address literals in okcore.h are rewritten as
+ * OKEMU_FLASH_BASE + offset by scripts/stage.js, so every offset and every
+ * difference between them is unchanged and only the origin moves.
+ *
+ * ok-rn/android/okemu reached the same answer for Android, where the fixed
+ * address collided with ART's JIT zygote cache.
+ */
+#ifdef _WIN32
+extern uintptr_t okemu_flash_base;
+#define OKEMU_FLASH_BASE   okemu_flash_base
+#else
 #define OKEMU_FLASH_BASE   0x00000000UL
+#endif
 #define OKEMU_FLASH_SIZE   0x00040000UL   /* 256 KB - MK20DX256 */
 #define OKEMU_EEPROM_SIZE  2048           /* Teensy 3.1 emulated EEPROM     */
 
