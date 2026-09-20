@@ -161,6 +161,59 @@ const PATCHES = [
   },
   {
     /*
+     * RNG2 IS DECLARED WITH THE WRONG SECOND PARAMETER, and on Windows that
+     * is the 12-webauthn-tunnel crash.
+     *
+     * The definition, okcore.cpp:7630, and okcore.h:369:
+     *
+     *     int RNG2(uint8_t *dest, unsigned size)
+     *
+     * But tweetnacl.c:88 and justhashtweetnacl.c:86 both declare:
+     *
+     *     extern int RNG2(u8 *,u8);   //Max size 255
+     *
+     * C has no overloading, so both resolve to the one symbol: the caller
+     * passes an 8-bit value and the callee reads a 32-bit one.
+     *
+     * WHY THIS IS HARMLESS EVERYWHERE ELSE. AAPCS and the SysV x86-64 ABI
+     * require the CALLER to widen a narrow argument to a full register, so
+     * the callee reading `unsigned` sees 32 and nothing is wrong. The
+     * Microsoft x64 ABI does not: the upper bits of a narrow argument are
+     * explicitly undefined, and the callee may not rely on them. So on
+     * Windows `size` is 32 in its low byte and whatever was already in the
+     * register above that.
+     *
+     * RNG2 then hands that to RNG.rand(dest, size) over crypto_box_keypair's
+     * 32-byte buffer. A smashed stack is also why nothing could report the
+     * fault: exception dispatch itself needs a sane stack, which is why
+     * neither the vectored handler nor the SEH frame ever ran, and why 8 MB,
+     * 64 MB and a stack guarantee all made no difference.
+     *
+     * Traced by console bisect: "A set_time returned" and "B memset done"
+     * both print, RNG2's own "Generating random number of size" never does.
+     *
+     * Scoped to win32 because the Linux build has been correct by ABI luck
+     * for years and this is not the place to change it - but the declarations
+     * should simply be fixed upstream, where it costs nothing on any target.
+     */
+    platform: 'win32',
+    file: 'libraries/tweetnacl/tweetnacl.c',
+    edits: [
+      ['extern int RNG2(u8 *,u8); //Max size 255',
+       'extern int RNG2(u8 *,unsigned); /* must match okcore.cpp:7630 - see stage.js */'],
+    ],
+  },
+  {
+    /* The same declaration, the same reason. See the tweetnacl entry above. */
+    platform: 'win32',
+    file: 'libraries/justhashtweetnacl/justhashtweetnacl.c',
+    edits: [
+      ['extern int RNG2(u8 *,u8); //Max size 255',
+       'extern int RNG2(u8 *,unsigned); /* must match okcore.cpp:7630 - see stage.js */'],
+    ],
+  },
+  {
+    /*
      * Rebase the firmware's flash addresses onto OKEMU_FLASH_BASE.
      *
      * The firmware reads its own storage through raw pointers at absolute
