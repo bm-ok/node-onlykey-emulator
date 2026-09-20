@@ -126,19 +126,38 @@ int restart_filter(EXCEPTION_POINTERS *ep) {
  */
 LONG CALLBACK fault_reporter(EXCEPTION_POINTERS *ep) {
   const EXCEPTION_RECORD *er = ep->ExceptionRecord;
-  if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+  const DWORD code = er->ExceptionCode;
+
+  /*
+   * STACK_OVERFLOW is reported as well as ACCESS_VIOLATION, and the pair is
+   * the point rather than thoroughness.
+   *
+   * A thread that has run out of stack cannot run a handler either - which is
+   * why this saw nothing at all while a process still exited 0xC0000005. The
+   * fix is SetThreadStackGuarantee in addon.cpp: it reserves a slice of stack
+   * that only the exception machinery may use, so there is room to report the
+   * overflow that just happened. Without that, "no handler fired" and
+   * "something dereferenced a bad pointer" look identical from outside, and
+   * they are not remotely the same bug.
+   */
+  if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_STACK_OVERFLOW)
     return EXCEPTION_CONTINUE_SEARCH;
 
   const uintptr_t at = (uintptr_t)er->ExceptionInformation[1];
-  if (at >= kSCBPage && at < kSCBPage + kPageSize)
+  if (code == EXCEPTION_ACCESS_VIOLATION
+      && at >= kSCBPage && at < kSCBPage + kPageSize)
     return EXCEPTION_CONTINUE_SEARCH;   /* the restart trap, not a fault */
 
   char line[256];
-  int n = snprintf(line, sizeof line,
-                   "[okemu] ACCESS VIOLATION %s %p (pc %p, thread %lu)\n",
-                   er->ExceptionInformation[0] ? "writing" : "reading",
-                   (void *)at, er->ExceptionAddress,
-                   (unsigned long)GetCurrentThreadId());
+  int n = code == EXCEPTION_STACK_OVERFLOW
+      ? snprintf(line, sizeof line,
+                 "[okemu] STACK OVERFLOW (pc %p, thread %lu)\n",
+                 er->ExceptionAddress, (unsigned long)GetCurrentThreadId())
+      : snprintf(line, sizeof line,
+                 "[okemu] ACCESS VIOLATION %s %p (pc %p, thread %lu)\n",
+                 er->ExceptionInformation[0] ? "writing" : "reading",
+                 (void *)at, er->ExceptionAddress,
+                 (unsigned long)GetCurrentThreadId());
   if (n > 0) {
     fwrite(line, 1, (size_t)n, stderr);
     fflush(stderr);

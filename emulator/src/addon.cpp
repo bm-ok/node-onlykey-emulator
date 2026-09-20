@@ -152,6 +152,23 @@ Napi::Value Start(const Napi::CallbackInfo &info) {
   uintptr_t h = _beginthreadex(
       nullptr, 8u * 1024u * 1024u,
       [](void *) -> unsigned {
+        /*
+         * LEAVE ROOM TO REPORT AN OVERFLOW.
+         *
+         * When a thread exhausts its stack there is, by definition, no stack
+         * left to run an exception handler on - so the vectored reporter in
+         * okemu_restart.cpp never ran, and the process just vanished with a
+         * status code and nothing else. That is why "no handler fired" was
+         * mistaken for "not a stack problem" once already.
+         *
+         * SetThreadStackGuarantee reserves a slice that only the exception
+         * machinery may use, so the overflow can be reported as an overflow.
+         * 64 KB is the usual figure and is plenty for a snprintf and an
+         * fwrite.
+         */
+        ULONG guarantee = 64 * 1024;
+        SetThreadStackGuarantee(&guarantee);
+
         okemu_firmware_run();   /* returns only on CPU_RESTART() */
         g.running = false;
         return 0;
