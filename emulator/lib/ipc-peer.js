@@ -31,6 +31,8 @@ class IpcPeer extends EventEmitter {
     this.maxRetryMs = opts.maxRetryMs || 5000;
     this.sock = null;
     this.connected = false;
+    this._pending = this._pending || [];
+    this._pendingDropped = this._pendingDropped || 0;
     this._closed = false;
     this._delay = this.retryMs;
     this.uhid = false;
@@ -59,6 +61,9 @@ class IpcPeer extends EventEmitter {
       this.connected = true;
       this._delay = this.retryMs;
       this.emit('connect');
+      /* Before `ready`, so the client receives what the device said while it
+       * was still dialling in - the boot banner above all. */
+      this._flushPending();
       /*
        * Include the current LED state in `ready`.
        *
@@ -177,9 +182,58 @@ class IpcPeer extends EventEmitter {
     this._send({ t: 'plugged', plugged });
   }
 
+  /*
+   * Hold what the device says before anyone is listening, instead of dropping
+   * it.
+   *
+   * This used to be `if (connected) write()`, with no else - so everything the
+   * firmware produced between emu.start() and the client's connect() was
+   * discarded. That window is not small in the one case that matters most: the
+   * boot banner. device-host.js starts the emulator, THEN constructs this peer,
+   * THEN listens on the socket, and only after all of that does the parent
+   * dial in - by which time a warm boot has already printed
+   * "UNLOCKED, NO PIN SET" and thrown it away.
+   *
+   * onlykey-testing waits on exactly that string (BOOT_BANNER in
+   * lib/device/emulated.js) and aborts the whole run when it does not arrive:
+   *
+   *     the device host never finished booting: timed out after 20000ms
+   *     waiting for device generation 0 to finish booting
+   *
+   * which reads like firmware that will not boot. It booted; the banner was
+   * dropped here. Two earlier attempts fixed the wrong layer - a pre-sink
+   * backlog in the HAL (2026-09-17) and an EventEmitter backlog in index.js
+   * (2026-09-22) - and neither could work, because by the time output reaches
+   * either of those a sink and a listener both exist. This is the only place
+   * the messages actually die.
+   *
+   * Bounded, and bounded by dropping the NEWEST rather than the oldest: the
+   * banner is the first thing said and the thing worth keeping, while what
+   * follows a long disconnection is idle touch-sense chatter. A client that
+   * never connects costs a fixed amount of memory and nothing else.
+   */
   _send(msg) {
     if (this.sock && this.connected && this.sock.writable) {
       this.sock.write(encode(msg));
+      return;
+    }
+    if (this._pending.length < IpcPeer.MAX_PENDING) this._pending.push(msg);
+    else this._pendingDropped++;
+  }
+
+  /* Called once the socket is up, before anything else is written to it. */
+  _flushPending() {
+    if (!this._pending.length) return;
+    const queued = this._pending;
+    this._pending = [];
+    for (const msg of queued) {
+      if (!(this.sock && this.connected && this.sock.writable)) break;
+      this.sock.write(encode(msg));
+    }
+    if (this._pendingDropped) {
+      this.emit('error', new Error(
+        `dropped ${this._pendingDropped} message(s) while no client was connected`));
+      this._pendingDropped = 0;
     }
   }
 
@@ -190,5 +244,7 @@ class IpcPeer extends EventEmitter {
     this.connected = false;
   }
 }
+
+IpcPeer.MAX_PENDING = 20000;
 
 module.exports = IpcPeer;
