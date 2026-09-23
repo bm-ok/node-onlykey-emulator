@@ -293,8 +293,22 @@ const PATCHES = [
       ['extern uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];',
        'extern "C" uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];  /* C linkage: stage.js */\n'
        + 'extern "C" uint8_t setBuffer[9];  /* ditto; declared in-function at :855 */'],
-      ['extern uint8_t outputmode;',
-       'extern int outputmode;   /* okcore.cpp:276 defines it int - stage.js */'],
+      /*
+       * The `outputmode` edit is GONE, because upstream carries it now.
+       *
+       * okcrypto.cpp declared it `extern uint8_t` while okcore.cpp defines it
+       * `int`, and this rewrote the declaration. libraries HEAD already reads
+       * `extern int outputmode;   /* defined as int in okcore.cpp ... ` at
+       * :174, so the pattern no longer exists and the patch failed to apply -
+       * which is a non-zero exit from stage.js, so `npm run stage && node-gyp`
+       * stopped before the compiler ever ran.
+       *
+       * Removed rather than left to warn: this is the same direction as
+       * libraries@2ec3a12, which moved the emulator's textual patches
+       * in-source precisely because "any whitespace change here silently
+       * un-applied a fix". A patch upstream has absorbed is one fewer thing
+       * that can un-apply.
+       */
     ],
   },
   {
