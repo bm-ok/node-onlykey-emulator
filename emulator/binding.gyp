@@ -194,6 +194,12 @@
       # make runs from build/, so the forced include needs an absolute path
       "cflags": [
         "-w", "-fpermissive", "-fPIC",
+        # tinycbor's open_memstream.c uses cookie_io_functions_t, a GNU
+        # extension glibc only declares under _GNU_SOURCE. g++ defines it for
+        # C++ TUs automatically, gcc does not for C ones, so the C half of the
+        # firmware failed to build on glibc 2.36 / gcc 12 (node:22-bookworm)
+        # with "unknown type name 'cookie_io_functions_t'".
+        "-D_GNU_SOURCE",
         "-include", "<(module_root_dir)/shim/okemu_prelude.h"
       ],
       "cflags_cc": [

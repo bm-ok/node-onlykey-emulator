@@ -140,7 +140,18 @@ void delay(uint32_t ms) {
   okemu_delay_ms(ms);
 }
 
-void yield(void) {
+/* WEAK, exactly as the Teensy core's own yield() is.
+ *
+ * This file stands in for pins_teensy.c, and the core defines yield() weak so
+ * a sketch can override it. OnlyKey.ino does override it - with a no-op, to
+ * stop the core's version referencing Serial1/2/3 and dragging in three unused
+ * UART drivers. Defining ours strong made that a link error the moment the
+ * sketch's override existed: "multiple definition of `yield'".
+ *
+ * Matching the core's linkage keeps the choice where the firmware makes it:
+ * the sketch's definition wins when it is there, ours is used when it is not.
+ * Nothing in the firmware has to know it is being emulated. */
+__attribute__((weak)) void yield(void) {
   /* The firmware never blocks on USB the way the Teensy core does; keeping
    * the millisecond counter current is all any caller needs here. */
   okemu_sync_systick();
