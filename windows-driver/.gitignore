@@ -1,0 +1,18 @@
+# Build output.
+build/
+
+# The WDK headers, libs and tools, fetched from NuGet by fetch-wdk.ps1.
+# Hundreds of megabytes of Microsoft redistributables have no business in a
+# source tree; the script reproduces them exactly.
+vendor/
+
+# Generated from ../emulator/lib/hid-descriptors.js at build time. Not
+# committed: a checked-in copy of a report descriptor is a second source of
+# truth, and the failure mode is a device that enumerates and behaves subtly
+# wrong rather than one that fails to build.
+src/descriptors.h
+
+# Test-signing certificate, created by sign.ps1 -Mode Test. Machine-local by
+# definition, and a trust anchor - not something to share.
+*.cer
+*.pfx

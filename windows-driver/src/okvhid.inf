@@ -1,0 +1,165 @@
+;
+; okvhid.inf - OnlyKey virtual HID token (UMDF 2 HID minidriver)
+;
+; Four root-enumerated devices, one per OnlyKey USB interface. The driver
+; picks its descriptor by matching the suffix of the hardware ID, so these
+; four names are load-bearing and must match g_OkInterfaces[].Tag in the
+; generated descriptors.h:
+;
+;     root\okvhid_kbd     hid.usb0  boot keyboard, 8-byte reports
+;     root\okvhid_fido    hid.usb1  usage page 0xF1D0, CTAP-HID
+;     root\okvhid_vendor  hid.usb2  usage page 0xFFAB
+;     root\okvhid_seremu  hid.usb3  usage page 0xFFC9
+;
+; Root enumeration is deliberate: there is no bus underneath. The reports come
+; from the OnlyKey emulator running in the same machine's user space, over the
+; private ioctl interface in public.h. Install with the four devgen entries in
+; install-driver.ps1, not by right-clicking this file - an INF with no
+; [Manufacturer] match for a present device does nothing from Explorer.
+;
+; The stack this builds, top to bottom:
+;
+;     HIDCLASS.SYS          created by mshidumdf registering as the FDO
+;     mshidumdf.sys         HID <-> UMDF reflector      (ASSOCSERVICE, 0x1fa)
+;     WUDFRd.sys            UMDF host reflector         (lower filter, 0x1f8)
+;     okvhid.dll            this driver
+;     root\okvhid_*         the devgen PDO
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = HIDClass
+ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider    = %ProviderName%
+CatalogFile = okvhid.cat
+DriverVer   = 01/01/2026,1.0.0.0
+PnpLockdown = 1
+
+[Manufacturer]
+%ManufacturerName% = Standard, NT$ARCH$.10.0...18362
+
+[Standard.NT$ARCH$.10.0...18362]
+%okvhid.kbd.DeviceDesc%    = okvhid_Install, root\okvhid_kbd
+%okvhid.fido.DeviceDesc%   = okvhid_Install, root\okvhid_fido
+%okvhid.vendor.DeviceDesc% = okvhid_Install, root\okvhid_vendor
+%okvhid.seremu.DeviceDesc% = okvhid_Install, root\okvhid_seremu
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+okvhid.dll = 1
+
+[DestinationDirs]
+DefaultDestDir  = 13
+UMDriverCopy    = 13
+
+; ================================================================ install
+
+[okvhid_Install.NT]
+CopyFiles = UMDriverCopy
+Include   = mshidumdf.inf, wudfrd.inf
+Needs     = MsHidUmdf.NT, WUDFRD_LowerFilter.NT
+
+[okvhid_Install.NT.hw]
+Include = mshidumdf.inf, wudfrd.inf
+Needs   = MsHidUmdf.NT.HW, WUDFRD_LowerFilter.NT.HW
+
+; WUDFRd is registered as a LOWER filter, beneath mshidumdf. That is what puts
+; the UMDF driver under the HID class driver rather than in place of it.
+[okvhid_Install.NT.Filters]
+Include = wudfrd.inf
+Needs   = WUDFRD_LowerFilter.NT.Filters
+
+;
+; The service layering, and it is the whole reason HIDCLASS appears above us.
+;
+; This previously did `Include = WUDFRD.inf / Needs = WUDFRD.NT.Services`,
+; which looks right and is not: that section adds WUDFRd with flag 0x1fa, and
+; bit 0x2 is SPSVCINST_ASSOCSERVICE - "this is the device's function driver".
+; So WUDFRd became the FDO, the stack ended at our UMDF driver, and HIDCLASS
+; was never loaded. Everything still LOOKED correct - the devices installed,
+; showed Class HIDClass because the INF says so, and reported Status OK
+; because our driver really did start - but they had no children, no HID
+; collections, and nothing WebAuthn or any HID API could ever see.
+;
+; The arrangement below is what mshidumdf.inf and hidbthle.inf (an in-box UMDF
+; HID minidriver) actually do:
+;
+;   mshidumdf  0x1fa  ASSOCSERVICE - the FDO. It registers with HIDCLASS and
+;                     reflects the HID IOCTLs down into UMDF, which is what
+;                     puts HIDCLASS on top and makes it enumerate the report
+;                     descriptor into child HID devices.
+;   WUDFRd     0x1f8  same flags MINUS the associate bit - present so UMDF can
+;                     host the driver, but not claiming to be the FDO.
+;
+; Note WHICH WUDFRd section is needed. WUDFRD.NT.Services adds it as
+; ASSOCSERVICE; WUDFRD_LowerFilter.NT.Services adds the same service with
+; 0x1f8 instead, and a device can only have one associated service. Declaring
+; the two AddService lines by hand also works and is what hidbthle.inf does,
+; but InfVerif then objects that the in-box binaries are not CopyFiles
+; destinations - Include/Needs is how a third-party INF says "use the system's
+; own definition".
+;
+[okvhid_Install.NT.Services]
+Include = mshidumdf.inf, wudfrd.inf
+Needs   = MsHidUmdf.NT.Services, WUDFRD_LowerFilter.NT.Services
+
+[okvhid_Install.NT.Wdf]
+UmdfService              = okvhid, okvhid_Install
+UmdfServiceOrder         = okvhid
+
+; HIDCLASS.SYS is a KERNEL-mode client of this driver: it sits above us and
+; sends the IOCTL_HID_* requests. UMDF refuses kernel-mode clients unless told
+; otherwise, and without this the device fails to start with CM_PROB_FAILED_ADD
+; - which reads as "the driver is broken" rather than "the driver was not
+; allowed to be talked to". Every UMDF HID minidriver needs it.
+UmdfKernelModeClientPolicy = AllowKernelModeClients
+
+; The HID IOCTLs are METHOD_NEITHER - IOCTL_HID_GET_REPORT_DESCRIPTOR,
+; IOCTL_HID_READ_REPORT and the rest pass raw user-mode pointers. A user-mode
+; driver cannot touch those directly, so the reflector has to copy the buffers
+; across. Without this the requests cannot be marshalled at all.
+UmdfMethodNeitherAction  = Copy
+
+UmdfFileObjectPolicy     = AllowNullAndUnknownFileObjects
+
+; The bridge holds an inverted-call IOCTL_OKVHID_PULL_OUTPUT open indefinitely
+; while it waits for Windows to send the token something. Without this the
+; framework tears the request down as an unresponsive driver.
+UmdfFsContextUsePolicy   = CannotUseFsContexts
+
+; No UmdfDirectHardwareAccess. It grants a user-mode driver access to physical
+; hardware resources - ports, mapped registers - and this driver has none: its
+; "device" is an emulator in another process. Asking for it would be requesting
+; a privilege for no reason.
+
+[okvhid_Install]
+UmdfLibraryVersion = $UMDFVERSION$
+; %13% is the driver store's own directory, which is where a UMDF 2 driver
+; belongs. It needs the [Standard.NT$ARCH$.10.0...18362] decoration above -
+; DIRID 13 arrived in 10.0.17134 and the [*.Filters] syntax in 10.0.18362,
+; whichever is higher sets the floor. InfVerif rejects an undecorated section
+; that uses it because the package would otherwise claim to install on builds
+; where that directory does not exist.
+ServiceBinary      = %13%\okvhid.dll
+; No DriverCLSID. That is a UMDF 1.x directive naming the COM class the host
+; instantiated; UMDF 2 drivers have a DriverEntry like any WDF driver, and
+; InfVerif rejects it outright on 2.x.
+
+[UMDriverCopy]
+okvhid.dll
+
+; ================================================================ strings
+
+[Strings]
+ProviderName            = "OnlyKey VM Manager"
+ManufacturerName        = "CRYPTOTRUST"
+DiskName                = "OnlyKey Virtual HID Installation Disk"
+
+; These show up in Device Manager. Naming each by its interface is what makes
+; a four-device tree readable when one of them misbehaves.
+okvhid.kbd.DeviceDesc    = "OnlyKey Virtual HID (Keyboard, hid.usb0)"
+okvhid.fido.DeviceDesc   = "OnlyKey Virtual HID (FIDO2 / CTAP-HID, hid.usb1)"
+okvhid.vendor.DeviceDesc = "OnlyKey Virtual HID (Vendor protocol, hid.usb2)"
+okvhid.seremu.DeviceDesc = "OnlyKey Virtual HID (SEREMU console, hid.usb3)"
