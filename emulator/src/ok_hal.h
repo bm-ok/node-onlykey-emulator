@@ -5,10 +5,12 @@
  * addon. The firmware compiles verbatim against the real Teensyduino headers;
  * the peripherals it reaches for are backed here instead of by silicon.
  *
- * The central trick: hal_init() mmaps the Kinetis peripheral windows and the
- * 256 KB flash array at their *real* MK20DX256 addresses. Every
- * `*(volatile uint32_t *)0x40020000` in the firmware then lands in ordinary
- * process memory rather than faulting, so kinetis.h needs no shimming at all.
+ * The central trick: every register and flash address the firmware uses lands
+ * in ordinary process memory rather than faulting. The register blocks are
+ * static arrays (okemu_regs.cpp) and scripts/stage.js rewrites each
+ * `*(volatile uint32_t *)0x40020000` in the staged kinetis.h to index them -
+ * NOT the real MK20DX256 addresses, which it once mapped and which collide
+ * with whatever the host runtime put there first (see okemu_regs.cpp).
  * The flash mapping is file-backed and MAP_SHARED, which makes the firmware's
  * direct `*(unsigned int *)adr` reads of its own storage work verbatim and
  * gives persistence for free.
@@ -55,6 +57,17 @@ extern uintptr_t okemu_flash_base;
 #define OKEMU_FLASH_BASE   0x00000000UL
 #endif
 #define OKEMU_FLASH_SIZE   0x00040000UL   /* 256 KB - MK20DX256 */
+
+/*
+ * The register blocks, relocated (okemu_regs.cpp). The HAL's own register
+ * accesses go through these, exactly as the firmware's do after stage.js has
+ * rewritten kinetis.h - a HAL left writing the literal address would seed
+ * memory the firmware never reads.
+ */
+extern unsigned char okemu_pbridge_base[0x00100000];
+extern unsigned char okemu_scs_base[0x00100000];
+#define OKEMU_PBRIDGE(a) ((void *)(okemu_pbridge_base + ((uintptr_t)(a) - 0x40000000UL)))
+#define OKEMU_SCS(a)     ((void *)(okemu_scs_base + ((uintptr_t)(a) - 0xE0000000UL)))
 #define OKEMU_EEPROM_SIZE  2048           /* Teensy 3.1 emulated EEPROM     */
 
 /* MK20DX256 has 6 touch-sensed buttons; firmware numbers them 1..6. */

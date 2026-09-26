@@ -55,7 +55,8 @@ inline bool in_flash(uintptr_t a) {
   return a >= flash_begin() && a < flash_end();
 }
 
-volatile uint8_t *ftfl_fsec() { return (volatile uint8_t *)0x40020002UL; }  /* kinetis.h:2350 */
+/* FTFL_FSEC (kinetis.h:2350), in the relocated block - see okemu_regs.cpp. */
+volatile uint8_t *ftfl_fsec() { return (volatile uint8_t *)OKEMU_PBRIDGE(0x40020002UL); }
 
 }  // namespace
 
