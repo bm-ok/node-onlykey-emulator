@@ -596,6 +596,9 @@ const REGISTER_BLOCKS = [
  * with anything but parentheses between (spaces, const, `* volatile`). */
 const CAST_LITERAL = /\(([A-Za-z_][^()]*?\*)\)\s*(0x[0-9A-Fa-f]{8})\b/g;
 
+/* Arduino libraries binding.gyp includes straight from the install. */
+const UNSTAGED_INCLUDE_LIBS = ['EEPROM', 'ADC'];
+
 function registerBlockFor(address) {
   return REGISTER_BLOCKS.find(b => address >= b.base && address < b.base + b.len);
 }
@@ -698,6 +701,27 @@ function rewriteRegisterBlocks() {
   for (const full of sources) {
     for (const h of rawRegisterCasts(fs.readFileSync(full, 'utf8'))) {
       leftovers.push(`${path.relative(STAGE, full)}:${h.line}: ${h.text}`);
+    }
+  }
+  /*
+   * AND THE HEADERS THE BUILD TAKES FROM OUTSIDE THE STAGE. binding.gyp puts
+   * two libraries of the Arduino install on the include path unstaged (EEPROM,
+   * ADC), so nothing above rewrites them - and they are shared with every
+   * other build on the machine, so this does not either. It only CHECKS them:
+   * a raw register address there would compile against memory nothing backs.
+   * The fix for a hit is to stage that library and let the pass above rewrite
+   * it. (Found by compiling the firmware without -w: ADC_Module.h is included
+   * this way. It names no register by address today - only the bit-band
+   * macro, inside inline members nothing calls.)
+   */
+  for (const lib of UNSTAGED_INCLUDE_LIBS) {
+    const dir = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries', lib);
+    if (!fs.existsSync(dir)) continue;
+    for (const ent of fs.readdirSync(dir)) {
+      if (!/\.(h|hpp)$/i.test(ent)) continue;
+      for (const h of rawRegisterCasts(fs.readFileSync(path.join(dir, ent), 'utf8'))) {
+        leftovers.push(`(Arduino install, unstaged) libraries/${lib}/${ent}:${h.line}: ${h.text}`);
+      }
     }
   }
   if (leftovers.length) {
