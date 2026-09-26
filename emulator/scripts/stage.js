@@ -107,6 +107,21 @@ const PATCHES = [
   },
   {
     /*
+     * The Teensy core's GPIO bit-band macro computes an address in the 32 MB
+     * alias region at 0x42000000. There is no alias region any more (see
+     * rewriteRegisterBlocks()), and the inline members that expand this are
+     * never called - so a call now fails to LINK against the undefined
+     * okemu_bitband_unsupported() instead of writing through an address
+     * nothing backs.
+     */
+    file: 'core/avr_emulation.h',
+    edits: [
+      ['#define GPIO_BITBAND_ADDR(reg, bit) (((uint32_t)&(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)',
+       '#define GPIO_BITBAND_ADDR(reg, bit) (okemu_bitband_unsupported())'],
+    ],
+  },
+  {
+    /*
      * Print::println(size_t) is ambiguous on LLP64 - i.e. on Windows.
      *
      * Print declares overloads up to `unsigned long` and stops. On the device
@@ -529,6 +544,196 @@ function applyPatches() {
   return applied;
 }
 
+/*
+ * Rewrite the register blocks out of the staged sources - NO FIXED ADDRESSES.
+ *
+ * Every register in kinetis.h is a literal absolute address:
+ *
+ *     #define FTFL_FSEC  (*(const uint8_t *)0x40020002)
+ *     #define SYST_CVR   (*(volatile uint32_t *)0xE000E018)
+ *
+ * This emulator used to mmap those windows at their real addresses, which is
+ * a bet against whatever the host runtime put there first - and it was lost:
+ * the bit-band alias collided with V8's heap and crash-looped the daemon, and
+ * ok-rn's copy of this HAL could not start on a phone whose runtime reserves
+ * 0x40000000 (see src/okemu_regs.cpp). So both blocks are ordinary arrays and
+ * every register is redirected into them: the arithmetic still resolves at
+ * compile time against the array, so the generated code is the same shape it
+ * always was.
+ *
+ * ONE PATTERN FOR EVERY SHAPE. Register casts come as `volatile`/`const`,
+ * with uneven spacing (`uint8_t  *`), as struct types (KINETIS_MCG_t), as the
+ * DMA `volatile const void * volatile *`, and inside the NVIC macros that do
+ * pointer arithmetic on a bare cast. So this matches the CAST,
+ * `(<type> *)0xAAAAAAAA`, wherever it appears, and wraps only the literal:
+ *
+ *     (*(const uint8_t *)0x40020002)   ->  (*(const uint8_t *)OKEMU_PBRIDGE(0x40020002))
+ *     ((volatile uint32_t *)0xE000E100 + n)  ->  ((volatile uint32_t *)OKEMU_SCS(0xE000E100) + n)
+ *
+ * Blanket, not targeted: only ~15 registers are really used, but a future
+ * firmware revision reaching a new one must not fault on some host.
+ *
+ * And then CHECKED. Anything that still casts a bridge or system-block
+ * literal afterwards - in kinetis.h or in any staged source - fails the
+ * stage, so a new raw hardware address breaks the BUILD rather than a host
+ * that happens to have something mapped there. okcore.h's CPU_RESTART_ADDR is
+ * one such literal outside kinetis.h; it is rewritten by the same pass.
+ *
+ * A header's own #define always wins over anything predefined from outside, so
+ * this cannot be done with -D or a force-included shim. Patching the staged
+ * copy is the only lever, exactly as it is for the CPSID asm above.
+ *
+ * Ported from ok-rn/android/okemu/scripts/stage.js.
+ */
+const REGISTER_BLOCKS = [
+  { name: 'peripheral bridge', base: 0x40000000, len: 0x00100000,
+    macro: 'OKEMU_PBRIDGE', array: 'okemu_pbridge_base' },
+  { name: 'system block', base: 0xE0000000, len: 0x00100000,
+    macro: 'OKEMU_SCS', array: 'okemu_scs_base' },
+];
+
+/* `(<type> *)0xAAAAAAAA` - a type that starts with a name and ends in `*`,
+ * with anything but parentheses between (spaces, const, `* volatile`). */
+const CAST_LITERAL = /\(([A-Za-z_][^()]*?\*)\)\s*(0x[0-9A-Fa-f]{8})\b/g;
+
+/* Arduino libraries binding.gyp includes straight from the install. */
+const UNSTAGED_INCLUDE_LIBS = ['EEPROM', 'ADC'];
+
+function registerBlockFor(address) {
+  return REGISTER_BLOCKS.find(b => address >= b.base && address < b.base + b.len);
+}
+
+/* Casts of a block address still left in `text` (comment lines skipped). */
+function rawRegisterCasts(text) {
+  const hits = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (/^\s*(\/\/|\/?\*)/.test(line)) return;
+    for (const m of line.matchAll(CAST_LITERAL)) {
+      if (registerBlockFor(parseInt(m[2], 16))) hits.push({ line: i + 1, text: line.trim() });
+    }
+  });
+  return hits;
+}
+
+function rewriteRegisterBlocks() {
+  const target = path.join(STAGE_CORE, 'kinetis.h');
+  let text = fs.readFileSync(target, 'utf8');
+
+  const counts = Object.fromEntries(REGISTER_BLOCKS.map(b => [b.name, 0]));
+  const rebase = (whole, type, addr) => {
+    const block = registerBlockFor(parseInt(addr, 16));
+    if (!block) return whole;       /* 0xF8.. / 0xF0003.. : Teensy LC only */
+    counts[block.name]++;
+    return `(${type})${block.macro}(${addr})`;
+  };
+  text = text.replace(CAST_LITERAL, rebase);
+
+  for (const b of REGISTER_BLOCKS) {
+    if (!counts[b.name]) {
+      console.error(`stage: WARNING - no ${b.name} registers rewritten`);
+      process.exitCode = 1;
+      return counts;
+    }
+  }
+
+  /*
+   * The macros have to be visible before the first use. kinetis.h opens with an
+   * include guard; put the declarations immediately after it so every consumer
+   * of the header gets them, in whatever order they include things.
+   *
+   * Matched as a regex rather than a literal: checkouts cloned on Windows
+   * carry CRLF, and a multi-line literal would silently fail to match.
+   *
+   * #ifndef-guarded because src/ok_hal.h defines the same two macros for the
+   * HAL's own register accesses, and a translation unit may see both.
+   */
+  const anchor = /#ifndef\s+_kinetis_h_\r?\n#define\s+_kinetis_h_\r?\n/;
+  if (!anchor.test(text)) {
+    console.error('stage: WARNING - kinetis.h include guard not where expected');
+    process.exitCode = 1;
+    return counts;
+  }
+  const decl =
+    '\n/* Injected by emulator/scripts/stage.js - see rewriteRegisterBlocks(). */\n' +
+    '#ifdef __cplusplus\nextern "C" {\n#endif\n' +
+    REGISTER_BLOCKS.map(b => `extern unsigned char ${b.array}[0x${b.len.toString(16).toUpperCase()}];\n`).join('') +
+    /* Bit-band: nothing compiled uses it, and there is no alias region any
+     * more. Declared, never defined - see the avr_emulation.h patch. */
+    'extern unsigned long okemu_bitband_unsupported(void);\n' +
+    '#ifdef __cplusplus\n}\n#endif\n' +
+    REGISTER_BLOCKS.map(b =>
+      `#ifndef ${b.macro}\n` +
+      `#define ${b.macro}(a) ((void *)(${b.array} + ((uintptr_t)(a) - 0x${b.base.toString(16).toUpperCase()}UL)))\n` +
+      '#endif\n').join('') +
+    '\n';
+  text = text.replace(anchor, (m) => m + decl);
+  fs.writeFileSync(target, text);
+
+  /*
+   * EVERY STAGED SOURCE, not just kinetis.h. Libraries carry their own copies
+   * of register definitions (ok-rn's first run of the check below found
+   * InternalTemperature.h defining SIM_SDID as a raw
+   * `*(const uint32_t *)0x40048024`), and okcore.h has CPU_RESTART_ADDR. They
+   * all see the macros through kinetis.h (every Arduino translation unit
+   * includes it); a file that did not would fail to COMPILE, which is the
+   * safe direction.
+   */
+  const sources = [];
+  const walk = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) { walk(full); continue; }
+      if (/\.(c|cpp|h|hpp|ino)$/i.test(ent.name) && full !== target) sources.push(full);
+    }
+  };
+  walk(STAGE_CORE);
+  walk(STAGE_LIB);
+  walk(STAGE_SKETCH);
+  for (const full of sources) {
+    const before = fs.readFileSync(full, 'utf8');
+    const after = before.replace(CAST_LITERAL, rebase);
+    if (after !== before) fs.writeFileSync(full, after);
+  }
+
+  /* The check: anything still casting a block address fails the stage. */
+  const leftovers = rawRegisterCasts(text).map(h => `core/kinetis.h:${h.line}: ${h.text}`);
+  for (const full of sources) {
+    for (const h of rawRegisterCasts(fs.readFileSync(full, 'utf8'))) {
+      leftovers.push(`${path.relative(STAGE, full)}:${h.line}: ${h.text}`);
+    }
+  }
+  /*
+   * AND THE HEADERS THE BUILD TAKES FROM OUTSIDE THE STAGE. binding.gyp puts
+   * two libraries of the Arduino install on the include path unstaged (EEPROM,
+   * ADC), so nothing above rewrites them - and they are shared with every
+   * other build on the machine, so this does not either. It only CHECKS them:
+   * a raw register address there would compile against memory nothing backs.
+   * The fix for a hit is to stage that library and let the pass above rewrite
+   * it. (Found by compiling the firmware without -w: ADC_Module.h is included
+   * this way. It names no register by address today - only the bit-band
+   * macro, inside inline members nothing calls.)
+   */
+  for (const lib of UNSTAGED_INCLUDE_LIBS) {
+    const dir = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries', lib);
+    if (!fs.existsSync(dir)) continue;
+    for (const ent of fs.readdirSync(dir)) {
+      if (!/\.(h|hpp)$/i.test(ent)) continue;
+      for (const h of rawRegisterCasts(fs.readFileSync(path.join(dir, ent), 'utf8'))) {
+        leftovers.push(`(Arduino install, unstaged) libraries/${lib}/${ent}:${h.line}: ${h.text}`);
+      }
+    }
+  }
+  if (leftovers.length) {
+    console.error('stage: ERROR - a raw hardware register address survived the rewrite.\n' +
+      '  The emulator must not depend on a fixed address (it collides with the\n' +
+      '  host runtime). Rebase these onto OKEMU_PBRIDGE / OKEMU_SCS:\n' +
+      leftovers.slice(0, 20).map(l => `    ${l}`).join('\n'));
+    process.exitCode = 1;
+  }
+  return counts;
+}
+
 function main() {
   for (const p of [CORE_SRC, FW, LIB_SRC]) {
     if (!fs.existsSync(p)) {
@@ -586,6 +791,9 @@ function main() {
   // 6. documented source-level fixups
   const patched = applyPatches();
 
+  // 7. no fixed addresses: registers into the relocated blocks, then checked
+  const registerCounts = rewriteRegisterBlocks();
+
   console.log(
     `stage: ${path.relative(ROOT, STAGE)}\n` +
     `  core files overlaid from OnlyKey-Firmware: ${overlaid}\n` +
@@ -593,7 +801,10 @@ function main() {
     `  bare-metal files dropped:                  ${dropped}\n` +
     `  Time.h consumers repointed at TimeLib.h:   ${timeRepointed}
 ` +
-    `  source patches applied:                    ${patched}`
+    `  source patches applied:                    ${patched}
+` +
+    `  registers rebased (no fixed addresses):    ` +
+    Object.entries(registerCounts).map(([n, c]) => `${n} ${c}`).join(', ')
   );
 }
 

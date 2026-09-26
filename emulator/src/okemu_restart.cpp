@@ -43,7 +43,16 @@ extern "C" void loop(void);
 
 namespace {
 
-const uintptr_t kAIRCR     = 0xE000ED0CUL;
+/*
+ * AIRCR, at the address the firmware actually writes.
+ *
+ * On the device this is the literal 0xE000ED0C. Here it is wherever the
+ * Cortex-M system block was relocated to - scripts/stage.js rewrites every
+ * register in that window to index okemu_scs_base[] (okemu_regs.cpp). Left as
+ * the literal, this trap would guard an address nothing writes and
+ * CPU_RESTART() would be a silent no-op.
+ */
+const uintptr_t kAIRCR     = (uintptr_t)OKEMU_SCS(0xE000ED0CUL);
 const size_t    kPageSize  = 4096;
 const uintptr_t kSCBPage   = kAIRCR & ~(uintptr_t)(kPageSize - 1);
 

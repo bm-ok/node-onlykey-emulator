@@ -10,7 +10,10 @@
  * shapes ok_hal.cpp asks for and nothing else:
  *
  *   1. anonymous, private, at a FIXED address   -> VirtualAlloc
- *      (the peripheral windows: 0x40000000, 0x42000000, 0xE0000000)
+ *      (was: the peripheral windows 0x40000000, 0x42000000, 0xE0000000.
+ *      Those are static arrays now - okemu_regs.cpp - and nothing in the
+ *      HAL asks for this shape any more; kept so a future caller still gets
+ *      NOREPLACE semantics rather than an assert.)
  *   2. file-backed, shared, address of OUR choosing -> CreateFileMapping
  *      (the flash and eeprom arrays)
  *
