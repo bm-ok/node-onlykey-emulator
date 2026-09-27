@@ -524,6 +524,18 @@ OkvhidPipeThread(LPVOID Param)
 
             if (h.Kind == OKVHID_FRAME_INPUT && h.Length) {
                 (void)OkvhidDeliverInput(ctx, payload, h.Length);
+            } else if (h.Kind == OKVHID_FRAME_UNPLUG) {
+                /*
+                 * Pull the cable: fail our own device so PnP surprise-removes
+                 * it, which no application can veto (see public.h). This call
+                 * only reports the failure - PnP tears the stack down on its
+                 * own thread, and OkvhidEvtDeviceReleaseHardware then stops
+                 * THIS thread through StopEvent. Nothing here waits on that,
+                 * so there is no deadlock with our own stop.
+                 */
+                OkvhidTrace(ctx, "unplug frame: failing the device for surprise removal");
+                WdfDeviceSetFailed((WDFDEVICE)WdfObjectContextGetObject(ctx),
+                                   WdfDeviceFailedNoRestart);
             }
         }
 
@@ -577,6 +589,7 @@ OkvhidPipeStart(_In_ PDEVICE_CONTEXT Ctx)
         return STATUS_UNSUCCESSFUL;
     }
 
+    OkvhidTrace(Ctx, "pipe start");
     return STATUS_SUCCESS;
 }
 
@@ -614,9 +627,13 @@ OkvhidPipeStop(_In_ PDEVICE_CONTEXT Ctx)
             CloseHandle(stranded);
         }
         Ctx->PipeThread = NULL;
+        Ctx->PipeAbandoned = TRUE;      /* no restart on this context */
+        OkvhidTrace(Ctx, "pipe stop: thread did not exit in 3 s - abandoned, name %s",
+                    stranded != NULL ? "reclaimed" : "already released");
         return;
     }
 
+    OkvhidTrace(Ctx, "pipe stop: thread exited, pipe closed");
     CloseHandle(Ctx->PipeThread);
     Ctx->PipeThread = NULL;
 

@@ -52,6 +52,7 @@ const FRAME_HELLO = 0;
 const FRAME_INPUT = 1;
 const FRAME_OUTPUT = 2;
 const FRAME_FEATURE = 3;
+const FRAME_UNPLUG = 4;                   /* emulator -> driver: remove the device */
 
 const IFACE_KEYBOARD = 0;
 
@@ -192,6 +193,17 @@ class Link {
     return true;
   }
 
+  /* Ask the driver to remove this device - see OKVHID_FRAME_UNPLUG. */
+  sendUnplug() {
+    if (!this.connected || !this._sock) return false;
+    const frame = Buffer.alloc(HEADER_SIZE);
+    frame.writeUInt32LE(FRAME_MAGIC, 0);
+    frame.writeUInt32LE(FRAME_UNPLUG, 4);
+    frame.writeUInt32LE(0, 8);
+    this._sock.write(frame);
+    return true;
+  }
+
   close() {
     this._closed = true;
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
@@ -305,6 +317,20 @@ class OkvhidBridge {
       if (link.connected || link._sock) { link.close(); changed = true; }
     }
     return changed;
+  }
+
+  /*
+   * Pull the cable: every device removes ITSELF, which - unlike the elevated
+   * hotplug.ps1 removal - no application can veto. See OKVHID_FRAME_UNPLUG in
+   * windows-driver/src/public.h. The pipes close as the devices go, and the
+   * links then retry until "Plug in" brings the devices back. Needs no
+   * elevation: the emulator is the key, and cutting its power is ours to do.
+   * Returns how many devices were told.
+   */
+  pullCable() {
+    let told = 0;
+    for (const [, link] of this.links) if (link.sendUnplug()) told++;
+    return told;
   }
 
   plug() {

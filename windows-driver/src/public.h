@@ -56,6 +56,17 @@
 #define OKVHID_FRAME_INPUT   1   /* emulator -> driver, an input report     */
 #define OKVHID_FRAME_OUTPUT  2   /* driver -> emulator, an output report    */
 #define OKVHID_FRAME_FEATURE 3   /* driver -> emulator, a feature report    */
+/*
+ * emulator -> driver: the cable was pulled - remove this device. No payload.
+ *
+ * An orderly removal (pnputil, devgen) can be VETOED by any application
+ * holding the collection open, and the OnlyKey App does: the device then
+ * never goes, and when "plugged back in" no new device arrives, so the App
+ * never sees the key again. A real cable pull cannot be vetoed. On this frame
+ * the driver fails its own device (WdfDeviceSetFailed, no restart), which is
+ * a surprise removal - the same thing a pulled cable causes.
+ */
+#define OKVHID_FRAME_UNPLUG  4
 
 #include <pshpack1.h>
 

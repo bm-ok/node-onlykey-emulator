@@ -99,6 +99,19 @@ OkvhidEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     WdfDeviceInitSetFileObjectConfig(DeviceInit, &fileConfig,
                                      WDF_NO_OBJECT_ATTRIBUTES);
 
+    /*
+     * The pipe lives exactly as long as the device is PRESENT - started when
+     * the hardware is prepared, stopped when it is released. See
+     * OkvhidEvtDeviceReleaseHardware for why that is not object cleanup.
+     */
+    {
+        WDF_PNPPOWER_EVENT_CALLBACKS pnp;
+        WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnp);
+        pnp.EvtDevicePrepareHardware = OkvhidEvtDevicePrepareHardware;
+        pnp.EvtDeviceReleaseHardware = OkvhidEvtDeviceReleaseHardware;
+        WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnp);
+    }
+
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, DEVICE_CONTEXT);
     /* Stops the pipe thread before the context it points at is freed. */
     attributes.EvtCleanupCallback = OkvhidEvtDeviceCleanup;
@@ -149,24 +162,64 @@ OkvhidEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
         return status;
     }
 
-    /*
-     * The pipe is what the emulator connects to. It is started here rather
-     * than lazily, so a device that is present is a device that is reachable
-     * - "plugged in" and "connectable" mean the same thing, which is what
-     * makes removing the device a faithful unplug.
-     */
-    status = OkvhidPipeStart(ctx);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
-
     return STATUS_SUCCESS;
 }
 
 /*
- * Tear the pipe down when the device goes away. This is the unplug path: the
- * thread exits, the pipe closes, and the emulator sees a clean disconnect
- * rather than a hang.
+ * Start the pipe when the device starts. The pipe is what the emulator
+ * connects to, and starting it with the device rather than lazily means a
+ * device that is present is a device that is reachable - "plugged in" and
+ * "connectable" mean the same thing, which is what makes removing the device
+ * a faithful unplug.
+ */
+NTSTATUS
+OkvhidEvtDevicePrepareHardware(_In_ WDFDEVICE Device, _In_ WDFCMRESLIST Raw,
+                               _In_ WDFCMRESLIST Translated)
+{
+    PDEVICE_CONTEXT ctx = DeviceGetContext(Device);
+
+    UNREFERENCED_PARAMETER(Raw);
+    UNREFERENCED_PARAMETER(Translated);
+
+    if (ctx->PipeThread != NULL) return STATUS_SUCCESS;   /* already up */
+    if (ctx->PipeAbandoned) {
+        /* A wedged thread from before still owns this context - see
+         * PipeAbandoned. Run without a pipe rather than beside it. */
+        OkvhidTrace(ctx, "prepare: previous pipe thread abandoned - no pipe");
+        return STATUS_SUCCESS;
+    }
+    return OkvhidPipeStart(ctx);
+}
+
+/*
+ * Stop the pipe when the device is released - its removal.
+ *
+ * THIS is the unplug path, not object cleanup. The pipe used to be stopped
+ * only in OkvhidEvtDeviceCleanup, when the WDFDEVICE object is destroyed, and
+ * that waits for every reference to go: an application holding the HID
+ * collection open keeps the object alive after the device has left PnP.
+ * Observed 2026-09-26: the installed OnlyKey App held the vendor collection,
+ * vetoed its removal (Kernel-PnP event 225), the device was deleted anyway,
+ * and its pipe thread kept serving \\.\pipe\okvhid-2 - so when the device was
+ * plugged back in, the new one could not take its own name and never came
+ * back. ReleaseHardware runs when the device is removed whatever is still
+ * open, which is what a pulled cable does to a real key.
+ */
+NTSTATUS
+OkvhidEvtDeviceReleaseHardware(_In_ WDFDEVICE Device, _In_ WDFCMRESLIST Translated)
+{
+    PDEVICE_CONTEXT ctx = DeviceGetContext(Device);
+
+    UNREFERENCED_PARAMETER(Translated);
+
+    OkvhidPipeStop(ctx);
+    return STATUS_SUCCESS;
+}
+
+/*
+ * Backstop: if the object is destroyed without a release (a failed start),
+ * make sure no thread outlives the context it points at. OkvhidPipeStop is a
+ * no-op when the pipe is already down.
  */
 VOID
 OkvhidEvtDeviceCleanup(_In_ WDFOBJECT Device)

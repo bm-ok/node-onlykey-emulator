@@ -780,6 +780,23 @@ $('btn-plug').addEventListener('click', async () => {
   sys(want ? 'powering on…' : 'cutting power…');
   try {
     const pw = getPower();
+    /*
+     * Windows: pull the cable BEFORE cutting power. Each okvhid device is
+     * told to remove itself (a surprise removal, like a real cable), because
+     * the elevated hotplug.ps1 removal can be vetoed by any app holding the
+     * key - the OnlyKey App does, and then never saw the key come back.
+     * powerOff() then stops the emulator and clears the dead device nodes.
+     */
+    if (!want && process.platform === 'win32' && client.connected) {
+      const told = await new Promise((resolve) => {
+        const t = setTimeout(() => resolve(null), 3000);
+        client.once('cablePulled', (m) => { clearTimeout(t); resolve(m.told); });
+        client.pullCable();
+      });
+      sys(told === null ? 'cable pull: no answer from the emulator - removing anyway'
+                        : `cable pulled - ${told} device(s) removing themselves`);
+      await new Promise((r) => setTimeout(r, 1000));   /* let PnP tear them down */
+    }
     if (want) await pw.powerOn(); else await pw.powerOff();
     setPluggedUi(want);
     sys(want ? 'plugged in' : 'unplugged (emulator stopped)');

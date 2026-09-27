@@ -154,6 +154,19 @@ async function main() {
     ipc.publishPlugged(bridge.plugged);
   });
 
+  /*
+   * Pull the cable (Windows): each okvhid device removes itself, which no
+   * application can veto - see OKVHID_FRAME_UNPLUG in windows-driver. Only
+   * the okvhid bridge has it; on Linux the answer is 0 and power.js unbinds
+   * the UDC as before. Answered either way, so the GUI never waits on a
+   * command nothing will reply to.
+   */
+  ipc.on('pull-cable', () => {
+    const told = bridge && typeof bridge.pullCable === 'function' ? bridge.pullCable() : 0;
+    log(`pull cable - ${told} device(s) told to remove themselves`);
+    ipc.publishCablePulled(told);
+  });
+
   ipc.start();
 
   /*

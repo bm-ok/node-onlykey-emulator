@@ -126,6 +126,7 @@ class IpcPeer extends EventEmitter {
         case 'restartDevice': this.emu.restartDevice(); break;
         case 'rebuild':       this.emit('rebuild'); break;
         case 'setPlugged':    this.emit('set-plugged', !!msg.plugged); break;
+        case 'pullCable':     this.emit('pull-cable'); break;
         /*
          * The keyboard control-transfer pair. Reply-carrying, unlike every
          * other command here, because GET_REPORT's whole point is the answer -
@@ -180,6 +181,11 @@ class IpcPeer extends EventEmitter {
   publishPlugged(plugged) {
     this.plugged = plugged;
     this._send({ t: 'plugged', plugged });
+  }
+
+  /** Answer pullCable: how many devices were told to remove themselves. */
+  publishCablePulled(told) {
+    this._send({ t: 'cablePulled', told });
   }
 
   /** Report a failure the host should show - the GUI prints it as "error: ...". */

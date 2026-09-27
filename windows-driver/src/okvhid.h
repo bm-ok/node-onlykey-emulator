@@ -112,6 +112,13 @@ typedef struct _DEVICE_CONTEXT {
     HANDLE volatile ListenPipe;
     volatile BOOLEAN PipeConnected;
     volatile BOOLEAN PipeStopping;
+
+    /*
+     * Set when OkvhidPipeStop gave up on a wedged thread. That thread still
+     * reads this context's fields, so no new thread may start on it: a second
+     * start would reset PipeStopping and hand the stuck one fresh events.
+     */
+    BOOLEAN PipeAbandoned;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, DeviceGetContext)
@@ -122,6 +129,8 @@ EVT_WDF_DRIVER_DEVICE_ADD        OkvhidEvtDeviceAdd;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP   OkvhidEvtDriverContextCleanup;
 EVT_WDF_DEVICE_FILE_CREATE       OkvhidEvtDeviceFileCreate;
 EVT_WDF_DEVICE_CONTEXT_CLEANUP   OkvhidEvtDeviceCleanup;
+EVT_WDF_DEVICE_PREPARE_HARDWARE  OkvhidEvtDevicePrepareHardware;
+EVT_WDF_DEVICE_RELEASE_HARDWARE  OkvhidEvtDeviceReleaseHardware;
 
 /* hid.c */
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL OkvhidEvtIoDeviceControl;

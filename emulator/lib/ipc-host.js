@@ -162,6 +162,8 @@ class IpcHost extends EventEmitter {
   factoryReset()           { this._send({ t: 'factoryReset' }); }
   restartDevice()          { this._send({ t: 'restartDevice' }); }
   rebuild()                { this._send({ t: 'rebuild' }); }
+  /* Windows: the devices remove themselves; answered with 'cablePulled'. */
+  pullCable()              { this._send({ t: 'pullCable' }); }
   getState()               { this._send({ t: 'getState' }); }
 
   close() {
