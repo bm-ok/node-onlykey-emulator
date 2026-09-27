@@ -20,6 +20,19 @@ const path = require('path');
  * this user, which is the access control we want now that nothing runs as root.
  */
 function defaultSocketPath() {
+  /*
+   * WINDOWS HAS NO UNIX SOCKET FILE - IT HAS NAMED PIPES. Node's net module
+   * listens and connects on a pipe name (\\.\pipe\...), and a path under
+   * %TEMP% is not one: the GUI's listen() never created anything there, so the
+   * daemon retried against ENOENT forever and the window sat at "connecting".
+   * The user name goes in the pipe name because pipes share one machine-wide
+   * namespace, where XDG_RUNTIME_DIR is per-user on Linux - two people on one
+   * PC must not dial each other's emulator.
+   */
+  if (process.platform === 'win32') {
+    const user = (os.userInfo().username || 'user').replace(/[^A-Za-z0-9_.-]/g, '_');
+    return `\\\\.\\pipe\\onlykey-emulator-${user}`;
+  }
   const runtime = process.env.XDG_RUNTIME_DIR || os.tmpdir();
   return path.join(runtime, 'onlykey-emulator.sock');
 }

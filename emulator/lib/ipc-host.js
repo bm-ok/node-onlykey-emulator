@@ -67,7 +67,15 @@ class IpcHost extends EventEmitter {
      * host were already listening we would fail to bind and say so, rather
      * than silently taking over.
      */
-    if (fs.existsSync(this.socketPath)) {
+    /*
+     * A Windows named pipe is not a file: it vanishes with the process that
+     * created it, so there is never a stale one to probe or unlink, no
+     * directory to create and no mode to set - the block below is all about
+     * socket FILES. A live host already on the name makes listen() fail with
+     * EADDRINUSE instead, reported below with the same message.
+     */
+    const isPipe = process.platform === 'win32' && this.socketPath.startsWith('\\\\');
+    if (!isPipe && fs.existsSync(this.socketPath)) {
       /*
        * A socket file can mean two very different things: a live host, or a
        * leftover from one that was killed. Unlinking unconditionally - as this
@@ -86,12 +94,22 @@ class IpcHost extends EventEmitter {
       }
       try { fs.unlinkSync(this.socketPath); } catch { /* fall through to bind */ }
     }
-    fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
+    if (!isPipe) fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
 
     this.server = net.createServer((sock) => this._onDevice(sock));
-    this.server.on('error', (err) => this.emit('error', err));
+    this.server.on('error', (err) => {
+      if (isPipe && err.code === 'EADDRINUSE') {
+        err = new Error(
+          `another IPC host is already listening on ${this.socketPath} ` +
+          `(the GUI, most likely) - stop it, or pass a different socketPath`
+        );
+      }
+      this.emit('error', err);
+    });
     this.server.listen(this.socketPath, () => {
-      try { fs.chmodSync(this.socketPath, 0o600); } catch { /* best effort */ }
+      if (!isPipe) {
+        try { fs.chmodSync(this.socketPath, 0o600); } catch { /* best effort */ }
+      }
       this.emit('listening', this.socketPath);
     });
     return this;
