@@ -630,6 +630,118 @@ function defuseTimeHeader() {
 
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
 
+/* ------------------------------------------------ the DEBUG gate
+ *
+ * Ported from ok-rn. `#define DEBUG` is at onlykey.h:81 in the firmware
+ * SOURCE, not a build option, and every pinned release's source has it LIVE -
+ * the signed images were built with it off. So staging a release as its
+ * source reads produces a DEBUG build, which reports "-test", and
+ * node-onlykey-lib then reads that as the development tree: a v3.0.4 "-test"
+ * key claims postQuantum and xwingDerive, which the real v3.0.4 does not have.
+ *
+ *     (unset)              a pinned release: OFF, as it was signed
+ *                          the working tree: as its source has it
+ *     OKEMU_PRODUCTION=1   force it OFF, the way the firmware ships
+ *     OKEMU_DEBUG=1        force it ON (the DEBUG console, e.g. to watch
+ *                          presses); the device then reports "-test"
+ */
+function wantDebug(release) {
+  if (process.env.OKEMU_DEBUG === '1') return true;
+  if (process.env.OKEMU_PRODUCTION === '1') return false;
+  return release.pins ? false : null;
+}
+
+/**
+ * Set - or just read - the DEBUG gate in the staged onlykey.h.
+ *
+ * A TOGGLE rather than a text patch, because the sources arrive on either side
+ * of it, and a patch written for one silently misses in the other. This finds
+ * whichever spelling is there and reports the state it leaves.
+ *
+ * DEBUG_CTAP_VERBOSE is a separate define only newer trees carry, and it
+ * follows DEBUG down: leaving it defined would keep printing to a console a
+ * production build does not have. It is never turned ON - it floods.
+ * @param {boolean|null} want  true for DEBUG, false for production, null as is
+ * @returns {boolean|null} whether the staged tree ends up with DEBUG defined
+ */
+function gateDebug(want) {
+  const target = path.join(STAGE_LIB, 'onlykey', 'onlykey.h');
+  const ON = '#define DEBUG //Enable Serial Monitor';
+  const OFF = '//#define DEBUG //Enable Serial Monitor';
+
+  let text = fs.readFileSync(target, 'utf8');
+
+  /* OFF contains ON as a substring, so it has to be tested first. */
+  let on;
+  if (text.includes(OFF)) on = false;
+  else if (text.includes(ON)) on = true;
+  else {
+    console.error(
+      'stage: WARNING - the DEBUG define is not where it has always been in ' +
+      'libraries/onlykey/onlykey.h, so the build gate could not be read.');
+    process.exitCode = 1;
+    return null;
+  }
+
+  if (want === null || want === on) {
+    console.log(`stage: DEBUG gate is ${on ? 'ON' : 'OFF'} as the sources have it`);
+    return on;
+  }
+
+  text = want
+    ? text.split(OFF).join(ON + ' - re-enabled by stage.js (OKEMU_DEBUG=1)')
+    : text.split(ON).join('//#define DEBUG - removed by stage.js: a production build');
+
+  /* Only ever downwards, and only where the tree has it. */
+  if (!want) {
+    const verbose = /^#define DEBUG_CTAP_VERBOSE.*$/m;
+    if (verbose.test(text)) {
+      text = text.replace(verbose,
+        '//#define DEBUG_CTAP_VERBOSE - removed with DEBUG; it prints to a ' +
+        'console a production build does not have');
+    }
+  }
+
+  fs.writeFileSync(target, text);
+  console.log(`stage: DEBUG gate turned ${want ? 'ON' : 'OFF'} (was ${on ? 'ON' : 'OFF'})`);
+  return want;
+}
+
+/**
+ * Keep core/keylayouts.h on the same side of the gate as onlykey.h.
+ *
+ * The header asks for this itself - "keep it in sync manually". With
+ * KEYLAYOUTS_DEBUG_BUILD defined, only US English compiles and every other
+ * layout types nothing. Reported either way, never fatal: a release old
+ * enough to predate the switch is a fact about that release.
+ * @param {boolean|null} debugOn  what the DEBUG gate ended up as
+ */
+function gateKeylayouts(debugOn) {
+  if (debugOn === null) return null;
+
+  const target = path.join(STAGE_CORE, 'keylayouts.h');
+  if (!fs.existsSync(target)) return null;
+
+  const ON = '#define KEYLAYOUTS_DEBUG_BUILD';
+  const OFF = '//#define KEYLAYOUTS_DEBUG_BUILD';
+
+  let text = fs.readFileSync(target, 'utf8');
+  const on = text.includes(OFF) ? false : text.includes(ON) ? true : null;
+  if (on === null) {
+    console.log('stage: keylayouts.h has no KEYLAYOUTS_DEBUG_BUILD switch at this pin');
+    return null;
+  }
+  if (on === debugOn) return on;
+
+  text = debugOn
+    ? text.split(OFF).join(ON + ' - re-enabled by stage.js to match the DEBUG gate')
+    : text.split(ON).join(OFF + ' - removed by stage.js to match the DEBUG gate');
+  fs.writeFileSync(target, text);
+  console.log(`stage: keyboard layouts ${debugOn ? 'US English only' : 'ALL ENABLED'} ` +
+    '- synced to the DEBUG gate');
+  return debugOn;
+}
+
 /* ------------------------------------------------ staging a RELEASED version
  *
  * Ported from ok-rn's android/okemu/scripts/stage.js, where the version matrix
@@ -1165,9 +1277,8 @@ function main() {
    * off, as every signed release does - its debug-off patches: lines that
    * only exist, or only misbehave, once the console is compiled out.
    */
-  const onlykeyH = path.join(STAGE_LIB, 'onlykey', 'onlykey.h');
-  const debugOn = fs.existsSync(onlykeyH) &&
-    /^[ \t]*#define[ \t]+DEBUG\b/m.test(fs.readFileSync(onlykeyH, 'utf8'));
+  const debugOn = gateDebug(wantDebug(release));
+  gateKeylayouts(debugOn);
   /*
    * okpqc.cpp (the post-quantum code) exists in no pinned release - it is
    * newer than all of them - so the emulator's win32 patch for it is declared

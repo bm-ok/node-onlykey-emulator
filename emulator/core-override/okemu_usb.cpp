@@ -290,8 +290,30 @@ void usb_keyboard_write_unicode(uint16_t cpoint) {
 extern uint8_t setBuffer[9];
 extern uint8_t getBuffer[9];
 extern uint8_t keyboard_buffer[];
-extern uint8_t sess_counter;
-extern uint8_t may_block;
+/*
+ * sess_counter and may_block are WEAK HERE, and that is a version fix (ported
+ * from ok-rn, where the version matrix found it).
+ *
+ * The current firmware declares them in okcore.cpp with the initialisers
+ * below, so the device can change what its Yubikey status report says. A
+ * RELEASE OLDER THAN THAT DOES NOT HAVE THEM: v2.1.0's own usb_dev.c writes the
+ * literals straight into the report -
+ *
+ *     getBuffer[4] = 0x03; //slot 1 and 2 configured
+ *     getBuffer[6] = 0x05;
+ *
+ * - so this file, a port of that same switch case, failed to LINK against
+ * v2.1.0 with two undefined symbols.
+ *
+ * A weak definition is right in both directions. Where the firmware defines
+ * them, its strong definitions win and the report says whatever the device
+ * decided. Where it does not, these supply exactly the constants that release
+ * hardcodes, so the report is byte-identical to the one it would have sent.
+ * Weak definitions already link on Windows (lld-link) - see yield() in
+ * okemu_pins.cpp and onlykeyhw in src/ok_hal.cpp.
+ */
+__attribute__((weak)) uint8_t sess_counter = 3;
+__attribute__((weak)) uint8_t may_block = 5;
 
 /* Host -> device. Mirrors `ep0_rx_ptr = setBuffer; ep0_rx_len = 8;`. */
 void okemu_kbd_set_report(const uint8_t *data, uint32_t len) {
