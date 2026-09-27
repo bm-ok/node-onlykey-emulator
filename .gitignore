@@ -6,6 +6,9 @@ node_modules
 # Regenerate with `npm run stage` in emulator/ - never edit it directly, edit
 # emulator/core-override/ or the PATCHES list in scripts/stage.js instead.
 emulator/.stage/
+# .stage-src/<version>/ holds released firmware trees unpacked from git by
+# OKEMU_VERSION staging (~6 MB each) - rebuilt from the pinned commits on demand.
+emulator/.stage-src/
 
 # node-gyp output
 emulator/build/

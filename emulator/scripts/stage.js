@@ -33,9 +33,20 @@ const ROOT = path.resolve(EMU, '..');
 const CHECKOUTS = path.resolve(ROOT, '..');
 const ARDUINO = path.join(CHECKOUTS, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
 const CORE_SRC = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'cores', 'teensy3');
-const FW = path.join(CHECKOUTS, 'OnlyKey-Firmware');
-const LIB_SRC = path.join(CHECKOUTS, 'libraries');
+/*
+ * The firmware sources. The working-tree checkouts by default; a released
+ * version when OKEMU_VERSION names one, in which case materialiseVersion()
+ * repoints these at that release's pinned commits (ok-versions.json).
+ */
+let FW = path.join(CHECKOUTS, 'OnlyKey-Firmware');
+let LIB_SRC = path.join(CHECKOUTS, 'libraries');
 const OVERRIDE = path.join(EMU, 'core-override');
+
+/*
+ * Released versions, unpacked by commit - see materialiseVersion(). Inside
+ * this repo but gitignored: ~6 MB a version, and rebuilt from git on demand.
+ */
+const VERSION_CACHE = path.join(EMU, '.stage-src');
 
 const STAGE = path.join(EMU, '.stage');
 const STAGE_CORE = path.join(STAGE, 'core');
@@ -532,6 +543,140 @@ function defuseTimeHeader() {
 
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
 
+/* ------------------------------------------------ staging a RELEASED version
+ *
+ * Ported from ok-rn's android/okemu/scripts/stage.js, where the version matrix
+ * was built and proven.
+ *
+ *     OKEMU_VERSION=v3.0.4 npm run stage
+ *
+ * The commits come from ok-versions.json, which pins `libraries` and
+ * `OnlyKey-Firmware` per release; everything else a release needs comes from
+ * its own script in scripts/versions/.
+ */
+const versions = require('./versions');
+
+/**
+ * Unpack one commit's tree into `dest`.
+ *
+ * Two git calls total, not one per file. `ls-tree -r` names every blob and
+ * `cat-file --batch` streams all their contents through a single process -
+ * which matters because `libraries` is several hundred files, and several
+ * hundred process spawns on Windows is a minute of nothing happening.
+ */
+function materialise(repo, sha, dest) {
+  const { execFileSync } = require('child_process');
+  const git = (args, opts) => execFileSync('git', ['-C', repo, ...args], {
+    maxBuffer: 1 << 30, windowsHide: true, ...opts,
+  });
+
+  let listing;
+  try {
+    listing = git(['ls-tree', '-r', '-z', sha], { encoding: 'utf8' });
+  } catch (e) {
+    throw new Error(
+      `cannot read ${sha} from ${repo}. The commit may not be in this checkout ` +
+      `- ok-versions.json pins releases that a fork may not carry.`,
+    );
+  }
+
+  /* -z gives NUL-terminated records of "<mode> <type> <sha>\t<path>". */
+  const entries = [];
+  for (const record of listing.split('\0')) {
+    if (!record) continue;
+    const tab = record.indexOf('\t');
+    if (tab === -1) continue;
+    const [, type, blob] = record.slice(0, tab).split(/\s+/);
+    if (type !== 'blob') continue;      // submodules and trees are not files
+    entries.push({ blob, file: record.slice(tab + 1) });
+  }
+  if (!entries.length) throw new Error(`${sha} in ${repo} has no files`);
+
+  /* No encoding: the blobs are binary, so the output must stay a Buffer. */
+  const batch = git(['cat-file', '--batch'], {
+    input: entries.map((e) => e.blob).join('\n') + '\n',
+  });
+
+  /*
+   * The batch stream is "<sha> <type> <size>\n<contents>\n" per object, and the
+   * contents are BINARY - parsed as a Buffer with explicit offsets rather than
+   * split on newlines, which would corrupt any file containing one.
+   */
+  let at = 0;
+  for (const entry of entries) {
+    const nl = batch.indexOf(0x0a, at);
+    const header = batch.slice(at, nl).toString('utf8');
+    const size = Number(header.split(' ')[2]);
+    const start = nl + 1;
+
+    const target = path.join(dest, entry.file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, batch.slice(start, start + size));
+
+    at = start + size + 1;              // trailing newline after each object
+  }
+  return entries.length;
+}
+
+/**
+ * Point FW and LIB_SRC at a released version's sources.
+ *
+ * Cached by commit, so switching back and forth across a matrix run costs one
+ * extraction each rather than one per build.
+ */
+function materialiseVersion(release) {
+  const { version, pins } = release;
+  const out = {};
+
+  for (const [repo, sha] of [
+    ['OnlyKey-Firmware', pins['OnlyKey-Firmware']],
+    ['libraries', pins.libraries],
+  ]) {
+    const dest = path.join(VERSION_CACHE, version, repo);
+    const stamp = path.join(dest, '.commit');
+
+    if (fs.existsSync(stamp) && fs.readFileSync(stamp, 'utf8').trim() === sha) {
+      out[repo] = dest;
+      console.log(`stage: ${repo}@${sha} already unpacked`);
+      continue;
+    }
+
+    rmrf(dest);
+    fs.mkdirSync(dest, { recursive: true });
+    const count = materialise(path.join(CHECKOUTS, repo), sha, dest);
+    fs.writeFileSync(stamp, sha + '\n');
+    out[repo] = dest;
+    console.log(`stage: ${repo}@${sha} unpacked, ${count} files`);
+  }
+
+  FW = out['OnlyKey-Firmware'];
+  LIB_SRC = out.libraries;
+}
+
+/**
+ * Copy one file, retrying a Windows lock.
+ *
+ * EBUSY here is not a broken build, it is another process holding the file for
+ * a moment - a watcher, an indexer, an antivirus scan of a tree that was just
+ * rewritten. In ok-rn it took down a matrix sweep twice, reported as a stage
+ * failure with no hint that waiting would have fixed it; both times the very
+ * next attempt succeeded. So: a few short retries, then the original error.
+ * Synchronous on purpose - everything around it is.
+ */
+function copyFileRetrying(src, dst, attempts = 5) {
+  for (let i = 1; ; i++) {
+    try {
+      fs.copyFileSync(src, dst);
+      return;
+    } catch (e) {
+      const transient = e && (e.code === 'EBUSY' || e.code === 'EPERM' || e.code === 'EACCES');
+      if (!transient || i >= attempts) throw e;
+      const until = Date.now() + 60 * i;
+      while (Date.now() < until) { /* hold: no event loop to await on */ }
+    }
+  }
+}
+
 function copyDir(src, dst) {
   fs.mkdirSync(dst, { recursive: true });
   for (const ent of fs.readdirSync(src, { withFileTypes: true })) {
@@ -539,7 +684,7 @@ function copyDir(src, dst) {
     const s = path.join(src, ent.name);
     const d = path.join(dst, ent.name);
     if (ent.isDirectory()) copyDir(s, d);
-    else fs.copyFileSync(s, d);
+    else copyFileRetrying(s, d);
   }
 }
 
@@ -771,6 +916,36 @@ function rewriteRegisterBlocks() {
 }
 
 function main() {
+  /*
+   * EVERY build has a version script, the working tree included (as in ok-rn):
+   * it says which patches this particular source tree needs. OKEMU_VERSION
+   * picks a release; unset is the working tree.
+   *
+   * Repoint FW and LIB_SRC BEFORE anything reads them, including the existence
+   * check below - so a missing pinned commit fails naming the commit, not the
+   * checkout.
+   */
+  let release;
+  try {
+    release = versions.load(process.env.OKEMU_VERSION || versions.WORKING_TREE);
+  } catch (e) {
+    console.error(`stage: ${e.message}`);
+    process.exit(1);
+  }
+  /*
+   * A release whose script says it cannot be staged ON THIS PLATFORM stops
+   * here, quoting its notes - rather than producing a tree under a version
+   * number every later measurement would be attached to.
+   */
+  if (release.status === 'blocked') {
+    console.error(`stage: ${release.version} is marked BLOCKED for ` +
+      `${versions.EMULATOR_PLATFORM} in its version script.`);
+    console.error(String(release.notes).replace(/^/gm, '  '));
+    process.exit(1);
+  }
+  if (release.pins) materialiseVersion(release);
+  console.log(`stage: ${release.version} (emulator ${versions.EMULATOR_PLATFORM}: ${release.status})`);
+
   for (const p of [CORE_SRC, FW, LIB_SRC]) {
     if (!fs.existsSync(p)) {
       console.error(`stage: missing required tree: ${p}`);
@@ -787,7 +962,7 @@ function main() {
   let overlaid = 0;
   for (const f of fs.readdirSync(FW)) {
     if (/\.(c|h)$/.test(f)) {
-      fs.copyFileSync(path.join(FW, f), path.join(STAGE_CORE, f));
+      copyFileRetrying(path.join(FW, f), path.join(STAGE_CORE, f));
       overlaid++;
     }
   }
@@ -797,7 +972,7 @@ function main() {
   if (fs.existsSync(OVERRIDE)) {
     for (const f of fs.readdirSync(OVERRIDE)) {
       if (/\.(c|cpp|h)$/.test(f)) {
-        fs.copyFileSync(path.join(OVERRIDE, f), path.join(STAGE_CORE, f));
+        copyFileRetrying(path.join(OVERRIDE, f), path.join(STAGE_CORE, f));
         overrides++;
       }
     }
@@ -812,7 +987,8 @@ function main() {
 
   // 5. vendored libraries and the sketch
   copyDir(LIB_SRC, STAGE_LIB);
-  copyDir(path.join(FW, 'OnlyKey'), STAGE_SKETCH);
+  /* A release may keep its sketch elsewhere (v0.2-beta.8: OnlyKey_Beta/). */
+  copyDir(path.join(FW, (release.sketch && release.sketch.dir) || 'OnlyKey'), STAGE_SKETCH);
 
   /*
    * Arduino's Time library is staged rather than included from the Arduino
