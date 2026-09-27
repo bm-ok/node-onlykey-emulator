@@ -4,42 +4,19 @@
 #include "ok_hal.h"
 
 #ifdef _WIN32
-/*
- * The Windows half of the HAL. Every POSIX facility this file leans on has a
- * counterpart, and the mapping is one-to-one apart from two places where the
- * platforms genuinely differ - see okemu_map_peripherals() for the early
- * initialiser and okemu_hal_init() for why there is no fallback walk here.
- *
- *   mmap(MAP_ANONYMOUS|MAP_FIXED_NOREPLACE)  VirtualAlloc(addr, MEM_COMMIT)
- *   mmap(MAP_SHARED) on a file               CreateFileMapping+MapViewOfFileEx
- *   msync(MS_SYNC)                           FlushViewOfFile
- *   clock_gettime(CLOCK_MONOTONIC)           QueryPerformanceCounter
- *   nanosleep                                high-resolution waitable timer
- *   ftruncate / pread / pwrite               _chsize_s / _lseeki64 + _read/_write
- *   __attribute__((constructor(101)))        a .CRT$XCT initialiser
- */
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
-#  include <io.h>
-#  include <direct.h>
-#  include <share.h>
-#  include <sys/stat.h>
-#  include <fcntl.h>
-#  include <errno.h>
-#  include <stdio.h>
-#  include <string.h>
-#  include <time.h>
+#include "okemu_win_posix.h"   /* mmap, open, ftruncate, nanosleep, ... */
+#include <sys/stat.h>
 #else
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 #include <errno.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#endif
 
 #include <atomic>
 #include <chrono>
@@ -50,33 +27,25 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+/*
+ * Where the flash array landed. Declared in ok_hal.h, which every
+ * firmware translation unit reaches, because okcore.h's rebased address
+ * constants name it and okcore.h includes nothing of ours.
+ */
+extern "C" uintptr_t okemu_flash_base = 0;
+#endif
+
 namespace {
 
-/* ------------------------------------------------------------ regions */
-
-struct Region { uintptr_t base; size_t len; const char *name; bool required; };
-
 /*
- * Kinetis peripheral windows the firmware touches, plus the Cortex-M system
- * block. Backing them with anonymous memory is what lets kinetis.h be used
- * unmodified: FTFL_*, SIM_*, PORTx_PCR*, TSI0_* all become plain loads/stores.
+ * Registers the firmware reads for identity/state. Named by their real
+ * addresses so they can be checked against kinetis.h, and reached through the
+ * relocated block (okemu_regs.cpp) - the same place the rewritten kinetis.h
+ * sends the firmware.
  */
-const Region kPeripherals[] = {
-  { 0x40000000UL, 0x00100000UL, "peripheral bridge", true  }, /* FTFL, SIM, PORT, TSI, ADC */
-  /*
-   * The bit-band alias is 32 MB and the firmware never uses the bit-band
-   * macros, so it is optional. Reserving that much fixed address space
-   * regularly collided with V8's own heap - MAP_FIXED_NOREPLACE then returns
-   * EEXIST and, because ASLR moves the heap each run, the daemon crash-looped
-   * intermittently. Skip it when the address is taken.
-   */
-  { 0x42000000UL, 0x02000000UL, "bitband alias",     false },
-  { 0xE0000000UL, 0x00100000UL, "cortex-m system",   true  }, /* SysTick, NVIC, SCB */
-};
-
-/* Registers the firmware reads for identity/state, by absolute address. */
-volatile uint32_t *reg32(uintptr_t a) { return (volatile uint32_t *)a; }
-volatile uint8_t  *reg8 (uintptr_t a) { return (volatile uint8_t  *)a; }
+volatile uint32_t *reg32(uintptr_t a) { return (volatile uint32_t *)OKEMU_PBRIDGE(a); }
+volatile uint8_t  *reg8 (uintptr_t a) { return (volatile uint8_t  *)OKEMU_PBRIDGE(a); }
 
 const uintptr_t kSIM_SDID  = 0x40048024UL;
 const uintptr_t kSIM_UIDH  = 0x40048054UL;
@@ -95,11 +64,6 @@ struct Hal {
   std::string dir;
   uint8_t *flash = nullptr;     /* mapped at OKEMU_FLASH_BASE */
   int flash_fd = -1;
-#ifdef _WIN32
-  /* The section object behind the flash view. Windows keeps the mapping and
-   * the file handle as separate objects, and both have to outlive the view. */
-  HANDLE flash_map = NULL;
-#endif
   size_t flash_mapped_off = 0;  /* first byte actually mapped (see init) */
   uint8_t eeprom[OKEMU_EEPROM_SIZE];
   int eeprom_fd = -1;
@@ -131,146 +95,27 @@ struct Hal {
 
 Hal g;
 
-#ifdef _WIN32
-
-uint64_t now_us() {
-  /* QPC is the monotonic clock here: unaffected by wall-clock changes, and
-   * its frequency is fixed for the life of the process, so it is queried
-   * once. */
-  static LARGE_INTEGER freq = { };
-  if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
-  LARGE_INTEGER c;
-  QueryPerformanceCounter(&c);
-  return (uint64_t)((c.QuadPart * 1000000LL) / freq.QuadPart);
-}
-
-/*
- * Sub-millisecond sleep.
- *
- * Sleep() is bounded by the scheduler tick, ~15.6 ms by default, which is far
- * too coarse for the SysTick thread - millis() would advance in 15 ms jumps
- * and payload()'s `while (millis() < wait)` loops would quantise to that.
- *
- * A high-resolution waitable timer gets real sub-millisecond waits without
- * timeBeginPeriod(), which would raise the timer resolution for the entire
- * system rather than this process. The flag needs Windows 10 1803; if the
- * timer cannot be created at all we fall back to Sleep() and accept the
- * coarseness rather than spin.
- */
-void sleep_us(uint64_t us) {
-  static HANDLE timer = NULL;
-  static bool tried = false;
-
-  if (!tried) {
-    tried = true;
-    timer = CreateWaitableTimerExW(NULL, NULL,
-                                   CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-                                   TIMER_ALL_ACCESS);
-    if (!timer) timer = CreateWaitableTimerExW(NULL, NULL, 0, TIMER_ALL_ACCESS);
-  }
-
-  if (timer) {
-    LARGE_INTEGER due;
-    due.QuadPart = -(LONGLONG)(us * 10ULL);   /* negative = relative, 100 ns */
-    if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
-      WaitForSingleObject(timer, INFINITE);
-      return;
-    }
-  }
-  Sleep((DWORD)(us / 1000ULL));
-}
-
-#else
-
 uint64_t now_us() {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
-void sleep_us(uint64_t us) {
-  struct timespec ts;
-  ts.tv_sec  = (time_t)(us / 1000000ULL);
-  ts.tv_nsec = (long)((us % 1000000ULL) * 1000ULL);
-  nanosleep(&ts, nullptr);
-}
-
-#endif
-
-/*
- * Positional read/write. Windows has no pread/pwrite, and the CRT's fd layer
- * has no atomic positional form at all - but neither backing file is touched
- * from more than one thread, so seek-then-transfer is equivalent here.
- */
-#ifdef _WIN32
-ssize_t pread_at(int fd, void *buf, size_t n, uint64_t off) {
-  if (_lseeki64(fd, (__int64)off, SEEK_SET) < 0) return -1;
-  return _read(fd, buf, (unsigned)n);
-}
-ssize_t pwrite_at(int fd, const void *buf, size_t n, uint64_t off) {
-  if (_lseeki64(fd, (__int64)off, SEEK_SET) < 0) return -1;
-  return _write(fd, buf, (unsigned)n);
-}
-inline int     okemu_close(int fd) { return _close(fd); }
-inline ssize_t okemu_write(int fd, const void *b, size_t n) {
-  return _write(fd, b, (unsigned)n);
-}
-#else
-ssize_t pread_at(int fd, void *buf, size_t n, uint64_t off) {
-  return pread(fd, buf, n, (off_t)off);
-}
-ssize_t pwrite_at(int fd, const void *buf, size_t n, uint64_t off) {
-  return pwrite(fd, buf, n, (off_t)off);
-}
-inline int     okemu_close(int fd) { return ::close(fd); }
-inline ssize_t okemu_write(int fd, const void *b, size_t n) {
-  return ::write(fd, b, n);
-}
-#endif
-
 /* Open `name` under the storage dir at `size` bytes, creating it filled with
  * `fill` if absent. Returns an fd or -1. */
 int open_backing(const std::string &dir, const char *name, size_t size,
                  uint8_t fill, char *err, size_t errlen) {
   std::string path = dir + "/" + name;
-#ifdef _WIN32
-  /*
-   * _O_BINARY is not optional: without it the CRT translates \n to \r\n on the
-   * way out and eats \r on the way in, which would corrupt a flash image
-   * wherever it happened to contain 0x0A.
-   */
-  int fd = -1;
-  if (_sopen_s(&fd, path.c_str(), _O_RDWR | _O_CREAT | _O_BINARY, _SH_DENYNO,
-               _S_IREAD | _S_IWRITE) != 0) {
-    fd = -1;
-  }
-#else
   int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0600);
-#endif
   if (fd < 0) {
     snprintf(err, errlen, "cannot open %s: %s", path.c_str(), strerror(errno));
     return -1;
   }
-  /* Current size, and whether it needs (re)initialising. */
-#ifdef _WIN32
-  const bool wrong_size = ((uint64_t)_filelengthi64(fd) != (uint64_t)size);
-#else
   struct stat st;
-  const bool wrong_size = (fstat(fd, &st) == 0 && (size_t)st.st_size != size);
-#endif
-
-  if (wrong_size) {
-    /* Truncate to nothing, then write the fill below, which grows it back to
-     * `size`. The POSIX path also pre-extends; the write is what actually
-     * sets the contents on both. */
-#ifdef _WIN32
-    const bool sized = (_chsize_s(fd, 0) == 0 && _lseeki64(fd, 0, SEEK_SET) == 0);
-#else
-    const bool sized = (ftruncate(fd, 0) == 0 && ftruncate(fd, (off_t)size) == 0);
-#endif
-    if (!sized) {
+  if (fstat(fd, &st) == 0 && (size_t)st.st_size != size) {
+    if (ftruncate(fd, 0) != 0 || ftruncate(fd, (off_t)size) != 0) {
       snprintf(err, errlen, "cannot size %s: %s", path.c_str(), strerror(errno));
-      okemu_close(fd);
+      ::close(fd);
       return -1;
     }
     /* A blank NOR flash / EEPROM array reads as 0xFF. */
@@ -278,9 +123,9 @@ int open_backing(const std::string &dir, const char *name, size_t size,
     size_t left = size;
     while (left) {
       size_t n = left < blank.size() ? left : blank.size();
-      if (okemu_write(fd, blank.data(), n) != (ssize_t)n) {
+      if (write(fd, blank.data(), n) != (ssize_t)n) {
         snprintf(err, errlen, "cannot init %s: %s", path.c_str(), strerror(errno));
-        okemu_close(fd);
+        ::close(fd);
         return -1;
       }
       left -= n;
@@ -290,112 +135,25 @@ int open_backing(const std::string &dir, const char *name, size_t size,
 }
 
 /*
- * Peripheral mapping must happen before ANY static initializer in the
- * firmware runs, not when okemu_hal_init() is called.
+ * The registers must be SEEDED before ANY static initializer in the firmware
+ * runs, not when okemu_hal_init() is called.
  *
  * T3Mac.cpp has a file-scope initializer that dereferences registers directly:
  *     unsigned long chipNum[4] = { SIM_UIDH, SIM_UIDMH, SIM_UIDML, SIM_UIDL };
- * That runs during dlopen(), long before JS can call start(). Without the
- * mapping already in place the addon segfaults as it loads.
+ * That runs during dlopen(), long before JS can call start(). The blocks
+ * themselves are static arrays (okemu_regs.cpp), so they exist from the moment
+ * the module is loaded and nothing here can fail - this only puts the values
+ * in them that the chip would hold at reset.
  *
  * A constructor priority below the default (65535) orders this ahead of every
  * C++ global constructor in the module. Priorities 0-100 are reserved for the
  * implementation, so 101 is the earliest slot available to us.
  *
- * Only the anonymous peripheral windows are set up here - they need no
- * configuration. The flash mapping is file-backed and needs the storage
- * directory, so it stays in okemu_hal_init(); nothing reads flash until
- * setup() runs.
+ * The flash mapping is file-backed and needs the storage directory, so it
+ * stays in okemu_hal_init(); nothing reads flash until setup() runs.
  */
-int g_map_status = -1;   /* 0 = mapped, -1 = not yet, >0 = errno */
-char g_map_error[256] = "peripheral mapping never ran";
-
-#ifdef _WIN32
-/*
- * MSVC has no constructor priorities, so the ordering is expressed through
- * the CRT's own initialiser sections instead. C++ static constructors are
- * emitted into .CRT$XCU; anything in an earlier suffix runs first, and the
- * linker concatenates them alphabetically. .CRT$XCT therefore lands ahead of
- * every global constructor in the module, which is exactly what priority 101
- * buys on the GNU side.
- *
- * The /INCLUDE keeps the pointer alive: this object file is pulled in for
- * okemu_hal_init() and friends, but the initialiser itself is referenced by
- * nothing, and without the directive the linker is free to drop it - which
- * would show up as a crash during module load rather than as a link error.
- */
-extern "C" void okemu_map_peripherals(void);
-static int okemu_run_map_peripherals(void) { okemu_map_peripherals(); return 0; }
-
-#  pragma section(".CRT$XCT", long, read)
-/*
- * __attribute__((used)) rather than a /INCLUDE: linker directive. The pointer
- * has internal linkage - it is only ever read by the CRT walking the section -
- * so there is no external name for /INCLUDE to ask for, and naming it there
- * produces "undefined symbol: okemu_early_init" at link time. `used` is the
- * direct way to say what is actually meant: keep this even though nothing
- * references it.
- *
- * The object file itself is pulled in regardless, because okemu_hal_init()
- * lives here and the addon calls it.
- */
-__declspec(allocate(".CRT$XCT")) __attribute__((used))
-static int (*okemu_early_init)(void) = okemu_run_map_peripherals;
-
-extern "C" void okemu_map_peripherals(void)
-#else
 __attribute__((constructor(101)))
-void okemu_map_peripherals(void)
-#endif
-{
-  for (const Region &r : kPeripherals) {
-#ifdef _WIN32
-    /*
-     * VirtualAlloc at an explicit base is the direct analogue of
-     * MAP_FIXED_NOREPLACE: it fails rather than relocating if the range is
-     * already spoken for, which is the property that matters - a peripheral
-     * window silently placed somewhere else would leave the firmware reading
-     * unmapped memory at the address it actually uses.
-     *
-     * The base is rounded down to the 64 KB allocation granularity by
-     * Windows, and all three regions here are granularity-aligned already.
-     */
-    void *p = VirtualAlloc((LPVOID)r.base, r.len, MEM_RESERVE | MEM_COMMIT,
-                           PAGE_READWRITE);
-    const bool failed = (p == NULL || (uintptr_t)p != r.base);
-    if (failed) {
-      if (p) VirtualFree(p, 0, MEM_RELEASE);
-      if (!r.required) {
-        fprintf(stderr, "[okemu] note: %s at %#llx unavailable (err %lu) - skipped\n",
-                r.name, (unsigned long long)r.base, GetLastError());
-        continue;
-      }
-      g_map_status = (int)GetLastError();
-      if (g_map_status == 0) g_map_status = -2;
-      snprintf(g_map_error, sizeof g_map_error,
-               "cannot map %s at %#llx: Windows error %lu",
-               r.name, (unsigned long long)r.base, GetLastError());
-      return;
-    }
-#else
-    void *p = mmap((void *)r.base, r.len, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-    if (p == MAP_FAILED || (uintptr_t)p != r.base) {
-      if (p != MAP_FAILED) munmap(p, r.len);
-      if (!r.required) {
-        fprintf(stderr, "[okemu] note: %s at %#lx unavailable (%s) - skipped\n",
-                r.name, (unsigned long)r.base, strerror(errno));
-        continue;
-      }
-      g_map_status = errno ? errno : EFAULT;
-      snprintf(g_map_error, sizeof g_map_error,
-               "cannot map %s at %#lx: %s", r.name, (unsigned long)r.base,
-               strerror(errno));
-      return;
-    }
-#endif
-  }
-
+void okemu_map_peripherals(void) {
   /*
    * Identity registers must hold their values before chipNum's initializer
    * samples them. SIM_SDID's PINID nibble selects the hardware variant: the
@@ -411,8 +169,6 @@ void okemu_map_peripherals(void)
 
   /* CCIF set = "flash controller idle", so the firmware's wait loops exit. */
   *reg8(kFTFL_FSTAT) = 0x80;
-
-  g_map_status = 0;
 }
 
 }  // namespace
@@ -444,20 +200,12 @@ static void stream_emit(const uint8_t *data, size_t len, int iface, int dir) {
 
 int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
   g.dir = storage_dir ? storage_dir : ".";
-#ifdef _WIN32
-  _mkdir(g.dir.c_str());
-#else
   mkdir(g.dir.c_str(), 0700);
-#endif
 
-  /* 1. peripheral windows ---------------------------------------------
-   * Already done by okemu_map_peripherals() during module load; here we only
-   * surface a failure, since by now the firmware's static initializers have
-   * run against whatever was (or wasn't) mapped. */
-  if (g_map_status != 0) {
-    snprintf(err, errlen, "%s", g_map_error);
-    return -1;
-  }
+  /* 1. register blocks --------------------------------------------------
+   * Nothing to do: they are static arrays (okemu_regs.cpp), seeded by
+   * okemu_map_peripherals() during module load. There is no mapping left
+   * that could fail, and so no error to surface here. */
 
   /* 2. flash array, file-backed at its real address -------------------
    *
@@ -479,62 +227,66 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
    * address we asked for, and anything else is unmapped and treated as a
    * failure.
    */
-  bool low_mapped = true;
-  size_t off = 0;
-
 #ifdef _WIN32
   /*
-   * No fallback walk here, deliberately. On Linux the base is 0 and how low
-   * the mapping can start depends on vm.mmap_min_addr, so the code tries
-   * progressively higher offsets and reports which rung it got. Windows has
-   * no such dial: the low 64 KB is reserved unconditionally, which is why
-   * OKEMU_FLASH_BASE is 0x10000 here and the firmware's own address constants
-   * are shifted to match (see stage.js). Either that one address is available
-   * or it is not, and there is no partial success worth reporting.
+   * WINDOWS PICKS THE ADDRESS AND WE TELL THE FIRMWARE WHICH.
    *
-   * MapViewOfFileEx rather than VirtualAlloc because this mapping is
-   * file-backed: writes must reach flash.bin so device state survives a
-   * restart. The base and the file offset both have to be multiples of the
-   * 64 KB allocation granularity - 0x10000 and 0 respectively, so both hold.
+   * None of the rungs below are reachable here: the bottom 64 KB of every
+   * Win32 process is the permanently reserved null-pointer guard, so 0 and
+   * 0x1000 cannot be mapped at all, and 0x10000 is the rung the warning below
+   * describes - certified_hw at 0x5BB0 unmapped, and every AES-GCM operation
+   * faulting.
+   *
+   * Mapping relocatably removes the whole question. OKEMU_FLASH_BASE is a
+   * variable on this platform (see ok_hal.h) and the firmware's four address
+   * literals are rewritten as OKEMU_FLASH_BASE + offset by stage.js, so the
+   * layout is identical and only the origin moves. Nothing is ever partially
+   * mapped, so the degraded mode - and the warning - cannot arise.
    */
-  HANDLE fh = (HANDLE)_get_osfhandle(g.flash_fd);
-  if (fh == INVALID_HANDLE_VALUE) {
-    snprintf(err, errlen, "flash.bin has no OS handle");
-    return -1;
-  }
-
-  /*
-   * Widen before shifting. OKEMU_FLASH_SIZE is a UL literal, and long is 32
-   * bits on Windows, so `>> 32` is undefined behaviour rather than zero -
-   * clang folded it to the value itself, which asked for a 0x40000_00040000
-   * byte section and came back ERROR_NOT_ENOUGH_MEMORY (8).
-   */
-  const uint64_t map_size = (uint64_t)OKEMU_FLASH_SIZE;
-  g.flash_map = CreateFileMappingW(fh, NULL, PAGE_READWRITE,
-                                   (DWORD)(map_size >> 32),
-                                   (DWORD)(map_size & 0xFFFFFFFFull),
-                                   NULL);
-  if (!g.flash_map) {
-    snprintf(err, errlen, "CreateFileMapping(flash.bin) failed: %lu",
-             GetLastError());
-    return -1;
-  }
-
-  void *fp = MapViewOfFileEx(g.flash_map, FILE_MAP_ALL_ACCESS, 0, 0,
-                             OKEMU_FLASH_SIZE, (LPVOID)OKEMU_FLASH_BASE);
-  if (!fp || (uintptr_t)fp != OKEMU_FLASH_BASE) {
-    DWORD e = GetLastError();
-    if (fp) UnmapViewOfFile(fp);
-    CloseHandle(g.flash_map);
-    g.flash_map = NULL;
-    snprintf(err, errlen,
-             "cannot map flash at %#llx: Windows error %lu. Something else "
-             "holds that range - the peripheral windows are reserved during "
-             "module load, so this is usually an address-space collision.",
-             (unsigned long long)OKEMU_FLASH_BASE, e);
-    return -1;
+  bool low_mapped = true;
+  size_t off = 0;
+  {
+    /*
+     * THE ADDRESS MUST FIT IN 32 BITS.
+     *
+     * Letting Windows choose put the array at 0x0000011F_F9470000, and the
+     * firmware promptly faulted at 0xF94AB003 - which is that base plus
+     * 0x3B003, truncated to 32 bits. The firmware is 32-bit code: it stores
+     * addresses in `unsigned long`, which is 64 bits on Linux (LP64) and 32
+     * bits on Windows (LLP64), so every address it keeps loses its top half
+     * here and nowhere else. See ok-rn/FINDING-64bit-pointer-narrowing.md.
+     *
+     * Retyping the firmware's address variables would be the thorough fix and
+     * a very large patch. Putting the array below 4 GB makes the truncation a
+     * no-op instead: the value round-trips, and the firmware's arithmetic is
+     * correct as written.
+     *
+     * The search stays under 0x40000000, where the peripheral windows begin,
+     * and steps by the 64 KB allocation granularity. MapViewOfFileEx fails
+     * rather than relocating, so a success is always the address asked for.
+     */
+    void *wfp = MAP_FAILED;
+    for (uintptr_t base = 0x10000000UL; base < 0x3F000000UL; base += 0x10000UL) {
+      wfp = mmap((void *)base, OKEMU_FLASH_SIZE, PROT_READ | PROT_WRITE,
+                 MAP_SHARED, g.flash_fd, 0);
+      if (wfp != MAP_FAILED) break;
+    }
+    if (wfp == MAP_FAILED) {
+      snprintf(err, errlen,
+               "cannot map flash below 4GB: %s", strerror(errno));
+      return -1;
+    }
+    okemu_flash_base = (uintptr_t)wfp;
+    /* Relocatable mapping means a fault address says nothing on its own.
+     * OKEMU_TRACE_MAP=1 prints the origin so an access violation can be read
+     * as an offset into the firmware's own address map. */
+    if (getenv("OKEMU_TRACE_MAP"))
+      fprintf(stderr, "[okemu] flash mapped at %p (%lu KB)\n",
+              wfp, (unsigned long)(OKEMU_FLASH_SIZE / 1024));
   }
 #else
+  bool low_mapped = true;
+  size_t off = 0;
   void *fp = mmap((void *)OKEMU_FLASH_BASE, OKEMU_FLASH_SIZE,
                   PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED_NOREPLACE,
                   g.flash_fd, 0);
@@ -586,14 +338,14 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
               (unsigned long)off);
     }
   }
-#endif  /* _WIN32 */
+#endif /* _WIN32 */
   g.flash = (uint8_t *)OKEMU_FLASH_BASE;
   g.flash_mapped_off = off;
 
   /* 3. EEPROM --------------------------------------------------------- */
   g.eeprom_fd = open_backing(g.dir, "eeprom.bin", OKEMU_EEPROM_SIZE, 0xFF, e2, sizeof e2);
   if (g.eeprom_fd < 0) { snprintf(err, errlen, "%s", e2); return -1; }
-  if (pread_at(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0) != OKEMU_EEPROM_SIZE)
+  if (pread(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0) != OKEMU_EEPROM_SIZE)
     memset(g.eeprom, 0xFF, OKEMU_EEPROM_SIZE);
 
   /*
@@ -601,7 +353,32 @@ int okemu_hal_init(const char *storage_dir, char *err, size_t errlen) {
    * (device-key derivation + fw_hash + lock). That path is only safe when the
    * whole flash array including fwstartadr (0x6060) is mapped.
    */
-  *(volatile uint8_t *)kFTFL_FSEC = low_mapped ? 0xFF : 0x44;
+#ifdef _WIN32
+  /*
+   * ALREADY PROVISIONED, EVERY BOOT.
+   *
+   * FSEC is a flash-controller register: on hardware it is persistent, and
+   * the firmware writes it once during provisioning so the one-time path
+   * never runs again. Here it is plain mapped memory that starts fresh with
+   * the process, so whatever we put in it is what the firmware believes on
+   * EVERY boot - it cannot latch.
+   *
+   * low_mapped is true on Windows, because the whole 256 KB really is mapped.
+   * Taking the 0xFF branch therefore sent the firmware through one-time
+   * provisioning after every restart, which wipes the device: the test kit's
+   * fixture set three PINs, rebooted to load them, and the device came back
+   * UNLOCKED, NO PIN SET.
+   *
+   * 0x44 is what Linux uses at the 'crypto' rung and what every fixture in
+   * the kit is written against. The cost is that the provisioning branch is
+   * not exercised here - fw-hash and attestation - which is exactly the
+   * trade Linux already makes, and capabilities.js reports this host as
+   * 'crypto' for that reason.
+   */
+  *reg8(kFTFL_FSEC) = 0x44;
+#else
+  *reg8(kFTFL_FSEC) = low_mapped ? 0xFF : 0x44;
+#endif
 
   okemu_time_start();
   okemu_systick_start();   /* millis() must advance without the firmware asking */
@@ -639,7 +416,8 @@ void okemu_systick_start(void) {
   g_systick_thread = std::thread([] {
     while (g_systick_run.load(std::memory_order_relaxed)) {
       okemu_sync_systick();
-      sleep_us(500);                        /* twice SysTick's 1 kHz rate */
+      struct timespec t = { 0, 500000L };   /* 500 us - twice SysTick's rate */
+      nanosleep(&t, NULL);
     }
   });
 }
@@ -649,38 +427,18 @@ void okemu_systick_stop(void) {
   if (g_systick_thread.joinable()) g_systick_thread.join();
 }
 
-/* Push the flash view's dirty pages to disk. */
-static void flash_sync(void) {
-  if (!g.flash) return;
-  void *base = (void *)(OKEMU_FLASH_BASE + g.flash_mapped_off);
-  size_t len = OKEMU_FLASH_SIZE - g.flash_mapped_off;
-#ifdef _WIN32
-  /* FlushViewOfFile queues the write; FlushFileBuffers is what makes it
-   * durable, and durability is the point - this runs on the path where the
-   * firmware has just asked to reboot. */
-  FlushViewOfFile(base, len);
-  if (g.flash_fd >= 0) {
-    HANDLE fh = (HANDLE)_get_osfhandle(g.flash_fd);
-    if (fh != INVALID_HANDLE_VALUE) FlushFileBuffers(fh);
-  }
-#else
-  msync(base, len, MS_SYNC);
-#endif
-}
-
 void okemu_hal_shutdown(void) {
   okemu_systick_stop();
   if (g.eeprom_fd >= 0) {
-    pwrite_at(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0);
-    okemu_close(g.eeprom_fd);
+    pwrite(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0);
+    ::close(g.eeprom_fd);
     g.eeprom_fd = -1;
   }
-  flash_sync();
-#ifdef _WIN32
-  if (g.flash) { UnmapViewOfFile((LPCVOID)OKEMU_FLASH_BASE); g.flash = nullptr; }
-  if (g.flash_map) { CloseHandle(g.flash_map); g.flash_map = NULL; }
-#endif
-  if (g.flash_fd >= 0) { okemu_close(g.flash_fd); g.flash_fd = -1; }
+  if (g.flash) {
+    msync((void *)(OKEMU_FLASH_BASE + g.flash_mapped_off),
+          OKEMU_FLASH_SIZE - g.flash_mapped_off, MS_SYNC);
+  }
+  if (g.flash_fd >= 0) { ::close(g.flash_fd); g.flash_fd = -1; }
 }
 
 void okemu_factory_reset(void) {
@@ -688,10 +446,11 @@ void okemu_factory_reset(void) {
   if (g.flash) {
     memset((void *)(OKEMU_FLASH_BASE + g.flash_mapped_off), 0xFF,
            OKEMU_FLASH_SIZE - g.flash_mapped_off);
-    flash_sync();
+    msync((void *)(OKEMU_FLASH_BASE + g.flash_mapped_off),
+          OKEMU_FLASH_SIZE - g.flash_mapped_off, MS_SYNC);
   }
   memset(g.eeprom, 0xFF, OKEMU_EEPROM_SIZE);
-  if (g.eeprom_fd >= 0) pwrite_at(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0);
+  if (g.eeprom_fd >= 0) pwrite(g.eeprom_fd, g.eeprom, OKEMU_EEPROM_SIZE, 0);
   g.restart = true;
 }
 
@@ -706,7 +465,10 @@ void okemu_time_start(void) { g.t0_us = now_us(); }
 uint32_t okemu_micros(void) { return (uint32_t)(now_us() - g.t0_us); }
 
 void okemu_delay_ms(uint32_t ms) {
-  sleep_us((uint64_t)ms * 1000ULL);
+  struct timespec ts;
+  ts.tv_sec  = ms / 1000;
+  ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+  nanosleep(&ts, nullptr);
   okemu_sync_systick();
 }
 
@@ -884,12 +646,33 @@ void okemu_eeprom_write(uint32_t addr, uint8_t v) {
   std::lock_guard<std::mutex> lk(g.mu);
   if (g.eeprom[addr] == v) return;
   g.eeprom[addr] = v;
-  if (g.eeprom_fd >= 0) pwrite_at(g.eeprom_fd, &v, 1, addr);
+  if (g.eeprom_fd >= 0) pwrite(g.eeprom_fd, &v, 1, (off_t)addr);
 }
 
 /* ----------------------------------------------------------- entropy */
 
 void okemu_random_bytes(uint8_t *out, size_t len) {
+#ifdef _WIN32
+  /*
+   * WINDOWS HAS NO /dev/urandom, AND THE FALLBACK BELOW IS NOT AN RNG.
+   *
+   * The POSIX path treats a missing /dev/urandom as pathological and degrades
+   * to now_us() smeared across the buffer. On Linux that branch is genuinely
+   * unreachable. On Windows the open() could never succeed, so every call
+   * would take it - and this function feeds key generation. Timestamp bytes
+   * as key material is not a degraded mode, it is a broken device that still
+   * answers.
+   *
+   * BCryptGenRandom with USE_SYSTEM_PREFERRED_RNG is the platform CSPRNG and
+   * needs no algorithm handle. If it ever fails there is nothing safe left to
+   * do, so abort rather than return something that looks like entropy.
+   */
+  if (BCryptGenRandom(NULL, out, (ULONG)len,
+                      BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0)
+    return;
+  fprintf(stderr, "[okemu] BCryptGenRandom failed - refusing to invent entropy\n");
+  abort();
+#else
   static int fd = -1;
   if (fd < 0) fd = ::open("/dev/urandom", O_RDONLY);
   if (fd >= 0) {
@@ -905,6 +688,7 @@ void okemu_random_bytes(uint8_t *out, size_t len) {
    * pathological fd exhaustion so the caller still gets varying bytes. */
   for (size_t i = 0; i < len; i++)
     out[i] = (uint8_t)(now_us() >> ((i % 8) * 8));
+#endif
 }
 
 }  // extern "C"

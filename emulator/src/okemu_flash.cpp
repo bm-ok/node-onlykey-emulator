@@ -25,24 +25,38 @@
 namespace {
 
 /*
- * The MK20DX256's first sector holds the reset vectors and flash config
- * field; the library refuses to touch it unless explicitly overridden.
+ * Both of these are relative to OKEMU_FLASH_BASE, which is not always zero.
  *
- * Written relative to OKEMU_FLASH_BASE rather than as the bare 0x800 it is on
- * the device. The base is zero everywhere except Windows, where the low 64 KB
- * of address space is unmappable and the whole flash map is shifted up by one
- * allocation granule (see ok_hal.h). Left absolute, this guard would compare
- * shifted addresses against an unshifted bound: every address would sit above
- * it, and the first-sector protection would silently stop protecting anything.
+ * They used to read `a < OKEMU_FLASH_SIZE` and `FLASH_SECTOR_SIZE`, which is
+ * the same thing only while the flash array is mapped at address 0 - true on
+ * Linux and nowhere else. Where the base moves (Windows, where the bottom
+ * 64 KB of the address space cannot be mapped at all), every address the
+ * firmware handed in fell outside the window, in_flash() said no, and
+ * flashEraseSector() and flashProgramWord() returned their failure code
+ * without writing anything.
+ *
+ * Nothing announced that. The firmware's own callers ignore the return, so a
+ * device would boot, take a PIN, report it committed, and come back from the
+ * next reboot with no PIN set and an empty flash.bin - because not one byte
+ * had ever been written. The write path was rejecting every address it was
+ * given while the read path worked perfectly.
+ *
+ * With OKEMU_FLASH_BASE == 0 these are exactly the old expressions, so the
+ * Linux build is unchanged.
  */
-const uintptr_t kFirstSectorEnd =
-    (uintptr_t)OKEMU_FLASH_BASE + FLASH_SECTOR_SIZE;
+inline uintptr_t flash_begin() { return (uintptr_t)OKEMU_FLASH_BASE; }
+inline uintptr_t flash_end()   { return flash_begin() + (uintptr_t)OKEMU_FLASH_SIZE; }
+
+/* The MK20DX256's first sector holds the reset vectors and flash config
+ * field; the library refuses to touch it unless explicitly overridden. */
+inline uintptr_t first_sector_end() { return flash_begin() + FLASH_SECTOR_SIZE; }
 
 inline bool in_flash(uintptr_t a) {
-  return a >= (uintptr_t)OKEMU_FLASH_BASE && a < (uintptr_t)OKEMU_FLASH_END;
+  return a >= flash_begin() && a < flash_end();
 }
 
-volatile uint8_t *ftfl_fsec() { return (volatile uint8_t *)0x40020002UL; }  /* kinetis.h:2350 */
+/* FTFL_FSEC (kinetis.h:2350), in the relocated block - see okemu_regs.cpp. */
+volatile uint8_t *ftfl_fsec() { return (volatile uint8_t *)OKEMU_PBRIDGE(0x40020002UL); }
 
 }  // namespace
 
@@ -62,7 +76,7 @@ int flashCheckSectorErased(unsigned long *address) {
 int flashEraseSector(unsigned long *address, bool allowFirstSector) {
   uintptr_t a = (uintptr_t)address & ~(uintptr_t)(FLASH_SECTOR_SIZE - 1);
   if (!in_flash(a)) return 1;
-  if (a < kFirstSectorEnd && !allowFirstSector) return 1;
+  if (a < first_sector_end() && !allowFirstSector) return 1;
   memset((void *)a, 0xFF, FLASH_SECTOR_SIZE);
   return 0;
 }
@@ -71,7 +85,7 @@ int flashProgramWord(unsigned long *address, unsigned long *data,
                      bool allowFirstSector, bool overrideSafetyForConfig) {
   uintptr_t a = (uintptr_t)address;
   if (!in_flash(a) || (a & 3u)) return 1;
-  if (a < kFirstSectorEnd && !allowFirstSector && !overrideSafetyForConfig)
+  if (a < first_sector_end() && !allowFirstSector && !overrideSafetyForConfig)
     return 1;
 
   volatile uint32_t *dst = (volatile uint32_t *)a;
@@ -92,7 +106,7 @@ void flashSetFlexRAM(void) {
 }
 
 unsigned long flashFirstEmptySector(void) {
-  for (uintptr_t a = kFirstSectorEnd; a < (uintptr_t)OKEMU_FLASH_END;
+  for (uintptr_t a = first_sector_end(); a < flash_end();
        a += FLASH_SECTOR_SIZE) {
     if (flashCheckSectorErased((unsigned long *)a) == 0) return (unsigned long)a;
   }

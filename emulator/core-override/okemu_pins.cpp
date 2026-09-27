@@ -14,22 +14,73 @@
 #include <stdint.h>
 #include <time.h>
 #include <stdlib.h>
+#include "ok_hal.h"
 
 /*
- * Deliberately not <thread>/<chrono>. This target is compiled as gnu++11 -
- * the firmware is C++11 code and raising it changes language rules it relies
- * on - and the MSVC STL requires C++17 or newer, so pulling <chrono> in here
- * fails inside <ctime> with a wall of "no member named 'clock_t' in the
- * global namespace". The sleep below is two lines either way; the standard
- * library is not worth that.
+ * GIVING THE CPU BACK, WITHOUT nanosleep().
+ *
+ * This used to be `struct timespec idle = {0, us * 1000L}; nanosleep(&idle, NULL);`
+ * which is POSIX and has no Windows equivalent. Two separate things break there:
+ *
+ *  1. nanosleep() simply does not exist in the UCRT.
+ *  2. `#include <time.h>` above does not reach the CRT header at all. The
+ *     Arduino Time library is on the include path and ships `Time.h`; Windows
+ *     filesystems are case-insensitive, so <time.h> resolves to THAT, which
+ *     forwards to TimeLib.h and never declares struct timespec. The compiler
+ *     reports the confusing "variable has incomplete type 'struct timespec'"
+ *     rather than a missing header.
+ *
+ * Both vanish by not naming a POSIX sleep. The throttle only needs "yield for
+ * roughly this long"; nanosecond precision was never the point - see the
+ * comment above micros(), where 250 us sits far below a 50 ms task period.
  */
 #ifdef _WIN32
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
+#include <windows.h>
+/*
+ * NOT Sleep(). Sleep(1) is not one millisecond.
+ *
+ * The throttle asks for 250 us. Sleep() takes whole milliseconds and rounds
+ * up to the scheduler tick, which by default is 15.6 ms - so Sleep(1) parks
+ * this thread about sixty times longer than asked, on a function the
+ * SoftTimer scheduler calls for every task on every pass. The first version
+ * of this file did exactly that and the emulator was too slow to finish
+ * booting: the firmware got as far as touch calibration and the test kit gave
+ * up after 15 s waiting for it to start reading its debug console.
+ *
+ * A high-resolution waitable timer takes its due time in 100 ns units and
+ * honours it, so 250 us really is 250 us. It needs Windows 10 1803 or newer;
+ * if creation fails, SwitchToThread() at least hands the core to anything
+ * else that is ready, which is what the throttle is for.
+ *
+ * The handle is created once and reused - the firmware runs on a single
+ * thread, so no synchronisation is needed around it.
+ */
+static inline void okemu_idle_us(uint32_t us) {
+  static HANDLE timer = NULL;
+  static bool tried = false;
+  if (!tried) {
+    tried = true;
+    timer = CreateWaitableTimerExW(
+        NULL, NULL,
+        CREATE_WAITABLE_TIMER_MANUAL_RESET | CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+        TIMER_ALL_ACCESS);
+  }
+  if (timer) {
+    LARGE_INTEGER due;
+    due.QuadPart = -(LONGLONG)us * 10;   /* negative = relative, 100 ns units */
+    if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+      WaitForSingleObject(timer, INFINITE);
+      return;
+    }
+  }
+  SwitchToThread();
+}
+#else
+static inline void okemu_idle_us(uint32_t us) {
+  struct timespec idle = { 0, (long)us * 1000L };
+  nanosleep(&idle, NULL);
+}
 #endif
-
-#include "ok_hal.h"
 
 extern "C" {
 
@@ -76,26 +127,7 @@ uint32_t micros(void) {
   uint32_t now = okemu_micros();
 
   if (now - last_us < OKEMU_MICROS_THROTTLE_US) {
-    /*
-     * Windows has no nanosleep, and its scheduler tick is ~15.6 ms by
-     * default, so a 250 us request sleeps for roughly one tick instead.
-     *
-     * That is fine, and worth saying why rather than reaching for
-     * timeBeginPeriod: this sleep exists to stop SoftTimer's busy-wait
-     * pegging a core, not to time anything. Oversleeping costs poll rate only
-     * while the firmware has nothing to do, because the sleep is skipped
-     * entirely whenever real time has advanced - so a caller genuinely
-     * waiting out an interval still runs at full speed. The effective poll
-     * rate becomes ~64 Hz rather than ~4 kHz, still far inside the 50 ms task
-     * period. Raising the system timer resolution to buy back the difference
-     * would be a machine-wide side effect for an emulator's idle loop.
-     */
-#ifdef _WIN32
-    Sleep(OKEMU_MICROS_THROTTLE_US / 1000u + 1u);
-#else
-    struct timespec idle = { 0, OKEMU_MICROS_THROTTLE_US * 1000L };
-    nanosleep(&idle, NULL);
-#endif
+    okemu_idle_us(OKEMU_MICROS_THROTTLE_US);
     now = okemu_micros();
   }
   last_us = now;
@@ -108,7 +140,18 @@ void delay(uint32_t ms) {
   okemu_delay_ms(ms);
 }
 
-void yield(void) {
+/* WEAK, exactly as the Teensy core's own yield() is.
+ *
+ * This file stands in for pins_teensy.c, and the core defines yield() weak so
+ * a sketch can override it. OnlyKey.ino does override it - with a no-op, to
+ * stop the core's version referencing Serial1/2/3 and dragging in three unused
+ * UART drivers. Defining ours strong made that a link error the moment the
+ * sketch's override existed: "multiple definition of `yield'".
+ *
+ * Matching the core's linkage keeps the choice where the firmware makes it:
+ * the sketch's definition wins when it is there, ours is used when it is not.
+ * Nothing in the firmware has to know it is being emulated. */
+__attribute__((weak)) void yield(void) {
   /* The firmware never blocks on USB the way the Teensy core does; keeping
    * the millisecond counter current is all any caller needs here. */
   okemu_sync_systick();

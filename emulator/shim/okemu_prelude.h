@@ -22,154 +22,6 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
-#include <stdarg.h>
-/*
- * <stdio.h> is here for mbedtls. platform.cpp includes only config.h and
- * platform.h, then calls _vsnprintf_s() inside `#if defined(_TRUNCATE)`. The
- * MSVC CRT defines _TRUNCATE in <stdlib.h>, so that branch is taken, but
- * declares _vsnprintf_s in <stdio.h>, which nothing there includes - so it
- * compiles everywhere else and fails only on Windows. Linux never takes the
- * branch, because glibc has no _TRUNCATE.
- */
-#include <stdio.h>
-
-/*
- * Print::printf's replacement. Declared here rather than in a header the core
- * includes, because the call sites are in the vendored Print.cpp and are
- * redirected by a staged patch - see scripts/stage.js and
- * core-override/okemu_printf.cpp for why the original cannot work on a 64-bit
- * host.
- *
- * void * rather than Print *: this header is force-included into C
- * translation units too, where Print does not exist.
- */
-#ifdef __cplusplus
-extern "C"
-#endif
-int okemu_vdprintf(void *print_obj, const char *format, va_list ap);
-
-/*
- * TimeLib.h opens with
- *
- *     #if !defined(__time_t_defined)   // avoid conflict with newlib or other posix libc
- *     typedef unsigned long time_t;
- *     #endif
- *
- * and that guard is a glibc/newlib spelling. glibc defines it, so on Linux the
- * typedef is skipped and the emulator has always used the platform's time_t.
- * The MSVC CRT does not define it under any name TimeLib knows, so the typedef
- * fires and collides with <time.h>'s - C2371, redefinition with a different
- * basic type, on the first translation unit that pulls both in.
- *
- * Declaring it here makes Windows behave the way Linux already does. This is
- * not a behaviour change dressed up as a portability fix: on the device
- * `unsigned long` is 32 bits, but the hosted Linux build has been using
- * glibc's 64-bit time_t all along, so matching that is what keeps the two
- * hosted platforms identical to each other.
- *
- * It belongs here rather than in TimeLib.h because TimeLib is a stock Arduino
- * library under onlykey/, and the collision is an artifact of hosting rather
- * than something the firmware owns.
- */
-#ifdef _WIN32
-#define __time_t_defined 1
-#endif
-
-/*
- * Two more things glibc supplies that the MSVC CRT does not. Both are pure
- * hosting artifacts - the firmware is correct on its own toolchain, and
- * neither belongs in the OnlyKey sources.
- */
-#ifdef _WIN32
-
-/*
- * `uint`. A BSD spelling that glibc's <sys/types.h> exposes under __USE_MISC
- * and the MSVC CRT has never had. T3Mac.cpp uses it for a loop counter.
- */
-typedef unsigned int uint;
-
-/*
- * `ssize_t`. POSIX, from <unistd.h>, which the MSVC CRT does not have.
- * tinycbor's open_memstream.c guards its own include with
- * `#if defined(__unix__) || defined(__APPLE__)` and then uses the type
- * unconditionally, so on Windows nothing declares it.
- *
- * Signed 64-bit to match the pointer width, which is what SSIZE_T in
- * <BaseTsd.h> is - declared here rather than dragging in a Windows header.
- */
-#ifndef _SSIZE_T_DEFINED
-#define _SSIZE_T_DEFINED
-typedef long long ssize_t;
-#endif
-
-/*
- * Shared firmware globals, declared once with C linkage and the type each one
- * is actually defined with.
- *
- * okcore.h wraps its declarations in `extern "C"`, so these symbols have C
- * linkage. Several .cpp files then re-declare them locally without the
- * linkage specification, and often with a different type than the definition:
- * outputmode and Profile_Offset are `int` in okcore.cpp and `uint8_t` in
- * their users, and keyboard_buffer is an array declared as a pointer.
- *
- * The Itanium C++ ABI does not mangle global variable names, so on Linux
- * every one of those spellings resolves to the same symbol and the type
- * confusion is invisible. The MSVC ABI does mangle them, so each variant
- * becomes a distinct symbol that nothing defines - seven undefined symbols at
- * link time.
- *
- * Declaring them here, force-included ahead of everything, gives all
- * translation units one consistent view; scripts/stage.js deletes the local
- * re-declarations so nothing contradicts it. It has to be a single namespace-
- * scope declaration rather than `extern "C"` added in place, because six of
- * the originals are at block scope and C++ permits a linkage-specification
- * only at namespace scope.
- *
- * The types here are the definitions' types, which means the translation
- * units that declared uint8_t now see int. That is a real change, and it is
- * the correct direction - reading one byte of an int was always wrong - but
- * it is a firmware behaviour change and should be treated as one. In practice
- * these hold small values on a little-endian host, so the low byte the old
- * declarations read is the same value.
- */
-#ifdef __cplusplus
-extern "C" {
-#endif
-extern int     large_buffer_offset;   /* okcore.cpp: int                  */
-extern uint8_t keyboard_buffer[];     /* okcore.cpp: uint8_t[80]          */
-extern uint8_t KeyboardLayout[];      /* keylayouts.c: uint8_t[1], C file */
-extern uint8_t setBuffer[];           /* okcore.cpp: uint8_t[9]           */
-extern uint8_t CRYPTO_AUTH;           /* okcore.cpp: uint8_t              */
-extern int     outputmode;            /* okcore.cpp: int                  */
-extern int     Profile_Offset;        /* okcore.cpp: int                  */
-#ifdef __cplusplus
-}
-#endif
-
-/*
- * `_Bool` in C++. glibc's <stdbool.h> carries a C++ branch that reads
- *
- *     #if defined __cplusplus
- *     // Supporting <stdbool.h> in C++ is a GCC extension.
- *     # define _Bool bool
- *
- * so a C header using _Bool keeps working when included from C++. MSVC's
- * <stdbool.h> has no such branch, and _Bool is a C keyword that does not
- * exist in C++ - so fido2/ctap.h fails on two struct members that are
- * perfectly legal everywhere else.
- *
- * Defining it exactly the way glibc does, rather than editing the header, is
- * the point: this is replicating a platform's behaviour, not changing the
- * firmware's.
- */
-#ifdef __cplusplus
-#include <stdbool.h>
-#ifndef _Bool
-#define _Bool bool
-#endif
-#endif
-
-#endif /* _WIN32 */
 
 /* Teensy's random()/srandom() -> distinct names, away from glibc's. */
 #define random  teensy_random
@@ -196,5 +48,98 @@ extern int     Profile_Offset;        /* okcore.cpp: int                  */
  */
 #define __disable_irq() __asm__ volatile("" ::: "memory")
 #define __enable_irq()  __asm__ volatile("" ::: "memory")
+
+/*
+ * vdprintf() for Windows - Print::printf()'s only dependency.
+ *
+ * Teensy's core/Print.cpp does:
+ *
+ *     int Print::printf(const char *format, ...) {
+ *         return vdprintf((int)this, format, ap);
+ *
+ * vdprintf(3) is POSIX and the UCRT has no equivalent. Note what is being
+ * passed as the file descriptor: `this`, a pointer, truncated to int. That is
+ * not a descriptor on any platform - on glibc it is simply some arbitrary
+ * number that write(2) rejects, so these calls have always failed silently
+ * rather than printed anything. The firmware does not use Print::printf; the
+ * method exists because it is part of the stock core.
+ *
+ * So the shim's job is to let the core COMPILE, not to make a broken call
+ * work. Sending the text to stderr is the one interpretation that is useful on
+ * a host if anything ever does reach it, and the bogus descriptor is ignored
+ * rather than dignified.
+ */
+#ifdef _WIN32
+#include <stdio.h>
+#include <stdarg.h>
+static inline int okemu_vdprintf(int /*fd - see above*/, const char *fmt,
+                                 va_list ap) {
+  return vfprintf(stderr, fmt, ap);
+}
+#define vdprintf okemu_vdprintf
+
+/*
+ * `uint` - a BSD spelling glibc exposes from <sys/types.h> and the UCRT does
+ * not. libraries/T3Mac/T3Mac.cpp:34 declares a local with it. It is always
+ * exactly unsigned int where it exists, so the typedef is not a guess.
+ */
+typedef unsigned int uint;
+
+/*
+ * Where the emulated flash array lives, on Windows.
+ *
+ * OKEMU_FLASH_BASE is the NAME OF THIS VARIABLE, not an address - Windows
+ * chooses where the 256 KB lands and okemu_hal_init() records it. stage.js
+ * rewrites okcore.h's four address literals as OKEMU_FLASH_BASE + offset, and
+ * okcore.h includes nothing of ours, so the declaration has to arrive through
+ * this prelude, which is force-included into every translation unit.
+ *
+ * ok_hal.h spells the same macro identically, which the standard permits: a
+ * macro may be redefined with the same token sequence. Both are kept, so
+ * neither file depends on the other having been included first.
+ */
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern uintptr_t okemu_flash_base;
+#ifdef __cplusplus
+}
+#endif
+#define OKEMU_FLASH_BASE okemu_flash_base
+
+/*
+ * `ssize_t` - POSIX, and the UCRT has no such name.
+ *
+ * libraries/tinycbor/open_memstream.c:42 uses it. That file is tinycbor's own
+ * replacement for open_memstream(3), which Windows also lacks, so the shim
+ * needs a shim. Windows spells the same type SSIZE_T in <BaseTsd.h>; it is
+ * `__int64` on x64, so long long is the same width and signedness.
+ *
+ * Guarded so it stands down if a Windows header gets there first - several
+ * define it and set _SSIZE_T_DEFINED when they do.
+ */
+#if !defined(_SSIZE_T_DEFINED) && !defined(ssize_t)
+typedef long long ssize_t;
+#define _SSIZE_T_DEFINED
+#endif
+#endif
+
+/*
+ * `_Bool` INSIDE C++ - a GCC extension, not a Windows gap.
+ *
+ * libraries/fido2/ctap.h:376-377 and ctap_parse.cpp:503 declare _Bool fields
+ * in headers included from C++ translation units. _Bool is a C99 keyword; in
+ * C++ the type is `bool` and the underscore spelling does not exist. GCC
+ * accepts it in C++ anyway as an extension, which is why the firmware and the
+ * Linux emulator build, and clang rejects it.
+ *
+ * Guarded on the COMPILER rather than the platform, because that is what the
+ * difference actually is - a clang build on Linux would need this too. The two
+ * types are layout-compatible, so this changes no ABI.
+ */
+#if defined(__clang__) && defined(__cplusplus)
+#define _Bool bool
+#endif
 
 #endif /* OKEMU_PRELUDE_H */

@@ -21,44 +21,19 @@
  * Faults elsewhere on the page are not restart requests. Rather than guess, we
  * unprotect the page and let the store retry so the firmware keeps running.
  */
-#ifdef _WIN32
-/*
- * The Windows form of the same trap.
- *
- * Structured exception handling replaces the signal handler, and the mapping
- * is closer than it looks: __except's filter is the handler, and its three
- * return values cover exactly the three cases the POSIX version distinguishes
- * with siglongjmp / return / chain-to-previous.
- *
- *   siglongjmp(g_park, 1)     EXCEPTION_EXECUTE_HANDLER    - the reboot path
- *   mprotect + return         EXCEPTION_CONTINUE_EXECUTION - retry the store
- *   restore default handler   EXCEPTION_CONTINUE_SEARCH    - a real crash
- *
- * Using __except rather than a vectored handler plus longjmp matters: the
- * firmware thread is deep inside C++ frames when CPU_RESTART() fires, and
- * longjmp out of an exception context on Windows x64 is not something to
- * rely on. Unwinding to the __except block is the supported route.
- */
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
-#  include <dbghelp.h>
-#  include <io.h>
-#  include <stdlib.h>
-#  include <stdio.h>
-#  include <string.h>
-#  pragma comment(lib, "dbghelp.lib")
-#else
 #include <signal.h>
+#ifdef _WIN32
+#include "okemu_win_posix.h"   /* backtrace, mmap, ... */
+#else
 #include <execinfo.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include <stdlib.h>
 #include <time.h>
 #include <setjmp.h>
-#include <sys/mman.h>
-#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
-#endif
 
 #include "ok_hal.h"
 
@@ -68,126 +43,188 @@ extern "C" void loop(void);
 
 namespace {
 
-const uintptr_t kAIRCR     = 0xE000ED0CUL;
+/*
+ * AIRCR, at the address the firmware actually writes.
+ *
+ * On the device this is the literal 0xE000ED0C. Here it is wherever the
+ * Cortex-M system block was relocated to - scripts/stage.js rewrites every
+ * register in that window to index okemu_scs_base[] (okemu_regs.cpp). Left as
+ * the literal, this trap would guard an address nothing writes and
+ * CPU_RESTART() would be a silent no-op.
+ */
+const uintptr_t kAIRCR     = (uintptr_t)OKEMU_SCS(0xE000ED0CUL);
 const size_t    kPageSize  = 4096;
 const uintptr_t kSCBPage   = kAIRCR & ~(uintptr_t)(kPageSize - 1);
-
-#ifdef _WIN32
-volatile long g_armed = 0;
-#else
-sigjmp_buf         g_park;
-volatile sig_atomic_t g_armed = 0;
-struct sigaction   g_prev_segv;
-#endif
 
 okemu_event_sink g_restart_fn  = nullptr;
 void            *g_restart_ctx = nullptr;
 
 #ifdef _WIN32
 
-/* Write straight to fd 2 - the same discipline as the POSIX handler, which
- * avoids stdio locks while the thread is inside a fault. */
-void err_write(const char *s, size_t n) { _write(2, s, (unsigned)n); }
+volatile long g_armed = 0;
 
 /*
- * Symbolised stack trace. Same purpose as backtrace_symbols_fd: ten
- * CPU_RESTART() sites look identical from outside, and naming the one that
- * fired is the difference between "it rebooted" and "it rebooted HERE".
+ * The same three-way decision as the POSIX handler below, expressed as a
+ * Structured Exception filter.
  *
- * SymInitialize is done once and left; this only ever runs on a reboot or a
- * crash, so the cost does not matter and tearing it down risks doing so while
- * another thread is mid-trace.
+ * Windows has no equivalent of longjmp-ing out of a fault handler - on x64
+ * the unwinder owns that path and siglongjmp's trick is not available. SEH
+ * makes the park unnecessary instead: returning EXCEPTION_EXECUTE_HANDLER
+ * transfers to the __except block in okemu_firmware_run(), which is exactly
+ * where sigsetjmp() was waiting. The other two verdicts have direct
+ * equivalents: CONTINUE_EXECUTION retries the faulting store after we widen
+ * the protection, and CONTINUE_SEARCH lets a genuine crash reach the
+ * debugger and the default handler, as the POSIX path does by restoring
+ * g_prev_segv.
  */
-void print_backtrace(int frames_wanted) {
-  static bool sym_ready = false;
-  if (!sym_ready) {
-    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
-    sym_ready = (SymInitialize(GetCurrentProcess(), NULL, TRUE) != FALSE);
-  }
-
-  void *frames[32];
-  if (frames_wanted > 32) frames_wanted = 32;
-  USHORT depth = CaptureStackBackTrace(1, (ULONG)frames_wanted, frames, NULL);
-
-  char line[512];
-  /* SYMBOL_INFO is variable-length: the name is appended past the struct. */
-  unsigned char sym_buf[sizeof(SYMBOL_INFO) + 256] = { 0 };
-  SYMBOL_INFO *sym = (SYMBOL_INFO *)sym_buf;
-  sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-  sym->MaxNameLen   = 255;
-
-  for (USHORT i = 0; i < depth; i++) {
-    DWORD64 addr = (DWORD64)(uintptr_t)frames[i];
-    int n;
-    if (sym_ready && SymFromAddr(GetCurrentProcess(), addr, NULL, sym)) {
-      DWORD disp = 0;
-      IMAGEHLP_LINE64 ln = { sizeof(IMAGEHLP_LINE64) };
-      if (SymGetLineFromAddr64(GetCurrentProcess(), addr, &disp, &ln)) {
-        n = snprintf(line, sizeof line, "  %s (%s:%lu)\n",
-                     sym->Name, ln.FileName, ln.LineNumber);
-      } else {
-        n = snprintf(line, sizeof line, "  %s\n", sym->Name);
-      }
-    } else {
-      n = snprintf(line, sizeof line, "  %p\n", frames[i]);
-    }
-    if (n > 0) err_write(line, (size_t)n);
-  }
-}
-
-/*
- * The filter. Runs before any unwinding, so it can still inspect and correct
- * the faulting state and resume - which is what the "some other system
- * register" case needs.
- */
-LONG restart_filter(EXCEPTION_POINTERS *ep) {
+int restart_filter(EXCEPTION_POINTERS *ep) {
   const EXCEPTION_RECORD *er = ep->ExceptionRecord;
-
-  if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
+  if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
     return EXCEPTION_CONTINUE_SEARCH;
-  }
 
-  /* ExceptionInformation[0] is 0 read / 1 write, [1] is the address. */
+  /* [0] is read/write/execute, [1] is the address touched. */
   const uintptr_t at = (uintptr_t)er->ExceptionInformation[1];
 
   if (g_armed && at >= kAIRCR && at < kAIRCR + 4) {
     if (getenv("OKEMU_TRACE_RESTART")) {
-      static const char msg[] = "\n[okemu] CPU_RESTART() from:\n";
-      err_write(msg, sizeof msg - 1);
-      print_backtrace(24);
+      fprintf(stderr, "\n[okemu] CPU_RESTART() from:\n");
+      void *frames[24];
+      int depth = backtrace(frames, 24);
+      /* No backtrace_symbols_fd here: resolving names would mean DbgHelp and
+       * a symbol path. Raw addresses still identify the site against a map. */
+      for (int i = 0; i < depth; i++) fprintf(stderr, "  %p\n", frames[i]);
+      fflush(stderr);
     }
     okemu_request_restart();
-    return EXCEPTION_EXECUTE_HANDLER;      /* unwind to the __except block */
+    return EXCEPTION_EXECUTE_HANDLER;
   }
 
   if (at >= kSCBPage && at < kSCBPage + kPageSize) {
-    /* Some other Cortex-M system register. Let the write through and retry
-     * the faulting instruction. */
-    DWORD old = 0;
-    VirtualProtect((LPVOID)kSCBPage, kPageSize, PAGE_READWRITE, &old);
+    /* Some other Cortex-M system register. Let the write through. */
+    DWORD old;
+    VirtualProtect((void *)kSCBPage, kPageSize, PAGE_READWRITE, &old);
     return EXCEPTION_CONTINUE_EXECUTION;
   }
 
+  fprintf(stderr, "\n[okemu] FATAL: access violation at %p\n", (void *)at);
   {
-    static const char msg[] = "\n[okemu] FATAL: access violation at ";
-    err_write(msg, sizeof msg - 1);
-    char addr[32];
-    int n = snprintf(addr, sizeof addr, "%p\n", (void *)at);
-    if (n > 0) err_write(addr, (size_t)n);
-    print_backtrace(32);
+    void *frames[32];
+    int depth = backtrace(frames, 32);
+    for (int i = 0; i < depth; i++) fprintf(stderr, "  %p\n", frames[i]);
   }
-
-  /* Not ours. Let Windows take it - which means WER, or a debugger. */
+  fflush(stderr);
   return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/*
+ * A last-resort reporter for faults the __except below never sees.
+ *
+ * The SEH frame in okemu_firmware_run() only covers the firmware thread. A
+ * fault on the systick thread, or inside an N-API callback, unwinds past it
+ * and the process simply disappears - the test kit sees "the device host
+ * exited (code 3221225477)" and nothing else, which is 0xC0000005 and says
+ * only that SOMETHING dereferenced something.
+ *
+ * A vectored handler runs before any frame-based handler, on every thread, so
+ * it can name the address whatever faulted. It never HANDLES anything:
+ * returning EXCEPTION_CONTINUE_SEARCH leaves the __except below - and the
+ * default handler after it - to decide, so arming this changes no behaviour.
+ *
+ * Writes inside the guarded SCB page are skipped, because those are the
+ * CPU_RESTART trap doing its job and are not a crash.
+ */
+LONG CALLBACK fault_reporter(EXCEPTION_POINTERS *ep) {
+  const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+  const DWORD code = er->ExceptionCode;
+
+  /*
+   * STACK_OVERFLOW is reported as well as ACCESS_VIOLATION, and the pair is
+   * the point rather than thoroughness.
+   *
+   * A thread that has run out of stack cannot run a handler either - which is
+   * why this saw nothing at all while a process still exited 0xC0000005. The
+   * fix is SetThreadStackGuarantee in addon.cpp: it reserves a slice of stack
+   * that only the exception machinery may use, so there is room to report the
+   * overflow that just happened. Without that, "no handler fired" and
+   * "something dereferenced a bad pointer" look identical from outside, and
+   * they are not remotely the same bug.
+   */
+  if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_STACK_OVERFLOW)
+    return EXCEPTION_CONTINUE_SEARCH;
+
+  const uintptr_t at = (uintptr_t)er->ExceptionInformation[1];
+  if (code == EXCEPTION_ACCESS_VIOLATION
+      && at >= kSCBPage && at < kSCBPage + kPageSize)
+    return EXCEPTION_CONTINUE_SEARCH;   /* the restart trap, not a fault */
+
+  char line[256];
+  int n = code == EXCEPTION_STACK_OVERFLOW
+      ? snprintf(line, sizeof line,
+                 "[okemu] STACK OVERFLOW (pc %p, thread %lu)\n",
+                 er->ExceptionAddress, (unsigned long)GetCurrentThreadId())
+      : snprintf(line, sizeof line,
+                 "[okemu] ACCESS VIOLATION %s %p (pc %p, thread %lu)\n",
+                 er->ExceptionInformation[0] ? "writing" : "reading",
+                 (void *)at, er->ExceptionAddress,
+                 (unsigned long)GetCurrentThreadId());
+  if (n > 0) {
+    fwrite(line, 1, (size_t)n, stderr);
+    fflush(stderr);
+    /*
+     * And to a file, if one was named. A crashing child's stderr is not
+     * reliably drained by whoever spawned it - the test kit reports only
+     * "the device host exited (code 3221225477)" and the pipe contents die
+     * with the process, which is exactly when this line is worth most.
+     */
+    const char *path = getenv("OKEMU_FAULT_LOG");
+    if (path) {
+      FILE *f = fopen(path, "a");
+      if (f) { fwrite(line, 1, (size_t)n, f); fclose(f); }
+    }
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/*
+ * Armed at LOAD, not when the firmware starts.
+ *
+ * It was first registered inside arm_restart_trap(), which runs at the top of
+ * okemu_firmware_run() - and that turned out to be too late to see the fault
+ * being chased: the device host was dying between okemu_hal_init() and the
+ * first line of the firmware, so the handler had never been installed and the
+ * report never appeared. A constructor covers the module from the moment it is
+ * loaded, which is the whole point of a reporter that never handles anything.
+ */
+__attribute__((constructor(102)))
+void okemu_arm_fault_reporter(void) {
+  AddVectoredExceptionHandler(1 /* call first */, fault_reporter);
+  /* Records that the reporter is in place, so an empty log can be told apart
+   * from a log that was never armed. */
+  const char *path = getenv("OKEMU_FAULT_LOG");
+  if (path) {
+    FILE *f = fopen(path, "a");
+    if (f) { fprintf(f, "[okemu] fault reporter armed (pid %lu)\n",
+                     (unsigned long)GetCurrentProcessId()); fclose(f); }
+  }
+}
+
 void arm_restart_trap() {
-  DWORD old = 0;
-  VirtualProtect((LPVOID)kSCBPage, kPageSize, PAGE_READONLY, &old);
+  DWORD old;
+  VirtualProtect((void *)kSCBPage, kPageSize, PAGE_READONLY, &old);
   g_armed = 1;
 }
 
+void disarm_restart_trap() {
+  DWORD old;
+  g_armed = 0;
+  VirtualProtect((void *)kSCBPage, kPageSize, PAGE_READWRITE, &old);
+}
+
 #else
+
+sigjmp_buf         g_park;
+volatile sig_atomic_t g_armed = 0;
+struct sigaction   g_prev_segv;
 
 void segv_handler(int sig, siginfo_t *info, void *uctx) {
   const uintptr_t at = (uintptr_t)info->si_addr;
@@ -254,7 +291,7 @@ void arm_restart_trap() {
   g_armed = 1;
 }
 
-#endif  /* _WIN32 */
+#endif /* _WIN32 */
 
 }  // namespace
 
@@ -268,12 +305,12 @@ void okemu_set_restart_sink(okemu_event_sink fn, void *ctx) {
 #ifdef _WIN32
 
 /*
- * Split out so okemu_firmware_run() can use __try/__except. A function
- * containing SEH may not also need C++ unwinding, and the loop below has no
- * objects with destructors - keeping it in its own function makes that
- * property local and obvious rather than something to preserve by accident.
+ * The firmware body, separated out so okemu_firmware_run() can wrap it in
+ * __try/__except. clang-cl refuses SEH in a function that also needs C++
+ * object unwinding, and keeping the two apart makes that impossible to
+ * violate by accident later.
  */
-static void firmware_loop(void) {
+static void firmware_body(void) {
   setup();
   for (;;) {
     loop();
@@ -285,13 +322,10 @@ void okemu_firmware_run(void) {
   arm_restart_trap();
 
   __try {
-    firmware_loop();
-  }
-  __except (restart_filter(GetExceptionInformation())) {
-    /* Arrived here from the AIRCR trap: the firmware asked to reboot. */
-    DWORD old = 0;
-    g_armed = 0;
-    VirtualProtect((LPVOID)kSCBPage, kPageSize, PAGE_READWRITE, &old);
+    firmware_body();
+  } __except (restart_filter(GetExceptionInformation())) {
+    /* Arrived from the AIRCR trap: the firmware asked to reboot. */
+    disarm_restart_trap();
     okemu_hal_shutdown();
     if (g_restart_fn) g_restart_fn(g_restart_ctx);
   }
@@ -326,6 +360,6 @@ void okemu_firmware_run(void) {
   }
 }
 
-#endif  /* _WIN32 */
+#endif /* _WIN32 */
 
 }  // extern "C"

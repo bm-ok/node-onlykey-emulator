@@ -5,10 +5,12 @@
  * addon. The firmware compiles verbatim against the real Teensyduino headers;
  * the peripherals it reaches for are backed here instead of by silicon.
  *
- * The central trick: hal_init() mmaps the Kinetis peripheral windows and the
- * 256 KB flash array at their *real* MK20DX256 addresses. Every
- * `*(volatile uint32_t *)0x40020000` in the firmware then lands in ordinary
- * process memory rather than faulting, so kinetis.h needs no shimming at all.
+ * The central trick: every register and flash address the firmware uses lands
+ * in ordinary process memory rather than faulting. The register blocks are
+ * static arrays (okemu_regs.cpp) and scripts/stage.js rewrites each
+ * `*(volatile uint32_t *)0x40020000` in the staged kinetis.h to index them -
+ * NOT the real MK20DX256 addresses, which it once mapped and which collide
+ * with whatever the host runtime put there first (see okemu_regs.cpp).
  * The flash mapping is file-backed and MAP_SHARED, which makes the firmware's
  * direct `*(unsigned int *)adr` reads of its own storage work verbatim and
  * gives persistence for free.
@@ -26,49 +28,46 @@ extern "C" {
 /* ---------------------------------------------------------------- layout */
 
 /*
- * Where the 256 KB flash array is mapped.
+ * Where the emulated flash array lives.
  *
- * On Linux this is the MK20DX256's real base, zero, so the firmware's own
- * `*(unsigned int *)adr` reads land exactly where they would on the device.
- * Reaching that low needs vm.mmap_min_addr at 4096 - see setup-permissions.sh,
- * and README's note on why 4096 rather than 0.
+ * On Linux it is the MK20DX256's real address, 0, so the firmware's own
+ * constants (fwstartadr 0x6060, certified_hw 0x5BB0, storage 0x3A800) are
+ * correct exactly as written and nothing needs rebasing.
  *
- * Windows cannot do it at all. The low 64 KB of user address space is
- * permanently reserved as the null-pointer partition, there is no
- * mmap_min_addr equivalent to lower, and MapViewOfFileEx additionally requires
- * a base aligned to the 64 KB allocation granularity rather than the page. So
- * the whole map is shifted up by exactly one granule.
+ * Windows reserves the bottom 64 KB of every process's address space as the
+ * null-pointer guard, with no equivalent of vm.mmap_min_addr to lower - so
+ * address 0 is unobtainable, and so is the 0x1000 fallback. The 0x10000 rung
+ * is allocatable but is the one ok_hal.cpp's own comment says leaves
+ * certified_hw unmapped, which segfaults the device on its first AES-GCM
+ * operation.
  *
- * This constant is one half of a pair. The other is the WINDOWS_FLASH_PATCH
- * entry in scripts/stage.js, which shifts the firmware's four flash address
- * roots by the same amount in the STAGED copy. They must agree: this says
- * where the memory is, that says where the firmware looks for it, and a
- * mismatch puts every flash access outside the mapping.
+ * So on Windows this is the NAME OF A VARIABLE, not an address: the kernel
+ * chooses where the 256 KB lands and okemu_hal_init() records it here. The
+ * firmware's four address literals in okcore.h are rewritten as
+ * OKEMU_FLASH_BASE + offset by scripts/stage.js, so every offset and every
+ * difference between them is unchanged and only the origin moves.
  *
- * Shifting all of them together is what makes it safe - every flash address in
- * the firmware derives from those four roots, so all relative offsets are
- * preserved. Without it, certified_hw at 0x5BB0, which
- * okcrypto_split_sundae() dereferences on every AES-GCM operation, would be
- * unmappable, and the device would boot, enumerate and answer HID perfectly
- * before segfaulting on the first thing it encrypted.
- *
- * Anything comparing a flash address against an absolute literal has to be
- * written relative to this. okemu_flash.cpp is the only such place.
+ * ok-rn/android/okemu reached the same answer for Android, where the fixed
+ * address collided with ART's JIT zygote cache.
  */
 #ifdef _WIN32
-#define OKEMU_FLASH_BASE   0x00010000UL   /* one Windows allocation granule */
+extern uintptr_t okemu_flash_base;
+#define OKEMU_FLASH_BASE   okemu_flash_base
 #else
 #define OKEMU_FLASH_BASE   0x00000000UL
 #endif
-
 #define OKEMU_FLASH_SIZE   0x00040000UL   /* 256 KB - MK20DX256 */
 
-/* How far the staged okcore.h's address roots move to match. Zero where
- * the flash is mapped at its real base, so the gate is inert off Windows. */
-#define OKEMU_FLASH_SHIFT  OKEMU_FLASH_BASE
-
-/* One past the last mapped flash byte. */
-#define OKEMU_FLASH_END    (OKEMU_FLASH_BASE + OKEMU_FLASH_SIZE)
+/*
+ * The register blocks, relocated (okemu_regs.cpp). The HAL's own register
+ * accesses go through these, exactly as the firmware's do after stage.js has
+ * rewritten kinetis.h - a HAL left writing the literal address would seed
+ * memory the firmware never reads.
+ */
+extern unsigned char okemu_pbridge_base[0x00100000];
+extern unsigned char okemu_scs_base[0x00100000];
+#define OKEMU_PBRIDGE(a) ((void *)(okemu_pbridge_base + ((uintptr_t)(a) - 0x40000000UL)))
+#define OKEMU_SCS(a)     ((void *)(okemu_scs_base + ((uintptr_t)(a) - 0xE0000000UL)))
 #define OKEMU_EEPROM_SIZE  2048           /* Teensy 3.1 emulated EEPROM     */
 
 /* MK20DX256 has 6 touch-sensed buttons; firmware numbers them 1..6. */

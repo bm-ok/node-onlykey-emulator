@@ -5,9 +5,9 @@
   "main": "index.js",
   "scripts": {
     "stage": "node scripts/stage.js && node scripts/gen-sources.js",
-    "configure": "npm run stage && node-gyp configure",
+    "configure": "npm run stage && node-gyp configure -Dnode_with_ltcg=false",
     "build": "npm run stage && node-gyp build",
-    "rebuild": "npm run stage && node-gyp configure && node-gyp build",
+    "rebuild": "npm run stage && node-gyp configure -Dnode_with_ltcg=false && node-gyp build",
     "smoke": "npm run build && node test/smoke.js"
   },
   "keywords": [],

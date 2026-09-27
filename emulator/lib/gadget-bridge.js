@@ -13,8 +13,9 @@
  *
  *     d.manufacturer === 'CRYPTOTRUST' && d.product === 'ONLYKEY' && d.interface === 3
  *
- * and python-onlykey does the same. Nothing under onlykey/ may be modified to
- * accommodate the emulator, so the emulator has to supply those fields for
+ * and python-onlykey does the same. None of the component checkouts beside this
+ * repo may be modified to accommodate the emulator, so it has to supply those
+ * fields for
  * real. Bound to dummy_hcd's virtual UDC, the gadget enumerates through the
  * kernel's USB stack and hidapi reads genuine descriptors:
  *

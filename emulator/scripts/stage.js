@@ -10,7 +10,7 @@
  *     cp libraries/*               -> arduino/libraries/
  *
  * We do the same into emulator/.stage, then overlay emulator/core-override/.
- * Nothing under onlykey/ is ever written to.
+ * Nothing in the component checkouts beside this repo is ever written to.
  *
  * The firmware's own host-build adaptations live in the OnlyKey sources
  * themselves, behind `#ifdef OK_EMULATOR` (defined by binding.gyp, never by the
@@ -29,11 +29,12 @@ const path = require('path');
 
 const EMU = path.resolve(__dirname, '..');
 const ROOT = path.resolve(EMU, '..');
-const OK = path.join(ROOT, 'onlykey');
-const ARDUINO = path.join(OK, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
+/* The components are checkouts beside this repo, not inside it - see setup.sh. */
+const CHECKOUTS = path.resolve(ROOT, '..');
+const ARDUINO = path.join(CHECKOUTS, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
 const CORE_SRC = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'cores', 'teensy3');
-const FW = path.join(OK, 'OnlyKey-Firmware');
-const LIB_SRC = path.join(OK, 'libraries');
+const FW = path.join(CHECKOUTS, 'OnlyKey-Firmware');
+const LIB_SRC = path.join(CHECKOUTS, 'libraries');
 const OVERRIDE = path.join(EMU, 'core-override');
 
 const STAGE = path.join(EMU, '.stage');
@@ -75,345 +76,24 @@ const DROP = [
 /*
  * Textual fixups applied to STAGED copies only.
  *
- * Everything the FIRMWARE needs in order to build and run on a host should end
- * up in the OnlyKey sources under `#ifdef OK_EMULATOR`, or - where the fix was
- * correct on the MK20DX256 too - as an unconditional correction. See the
- * README section "Running 32-bit firmware on a 64-bit host". A gate in the
- * source is more robust than a patch here, because a patch is a literal string
- * substitution that silently stops applying the moment upstream whitespace
- * moves.
+ * There is exactly one, and there should stay exactly one. Everything the
+ * FIRMWARE needs in order to build and run on a host now lives in the OnlyKey
+ * sources under `#ifdef OK_EMULATOR`, or - where the fix was correct on the
+ * MK20DX256 too - as an unconditional correction. See the README section
+ * "Running 32-bit firmware on a 64-bit host".
  *
- * One entry is permanent. The vendored Teensy core is not OnlyKey code, and it
- * defines two constructs in terms of Cortex-M inline assembly; a header's own
- * #define always wins over anything predefined from outside, so it cannot be
- * overridden by okemu_prelude.h or by -D. Patching the staged copy is the only
- * lever, and the core stays free of emulator knowledge.
+ * What remains is the vendored Teensy core, which is not OnlyKey code. It
+ * defines two constructs in terms of Cortex-M inline assembly, and a header's
+ * own #define always wins over anything predefined from outside, so it cannot
+ * be overridden by okemu_prelude.h or by -D. Patching the staged copy is the
+ * only lever, and the core stays free of emulator knowledge.
  *
- * ---------------------------------------------------------------------------
- * Rule for agent-authored firmware changes
- * ---------------------------------------------------------------------------
- * Any firmware change proposed by an AI agent lands HERE FIRST, as a patch
- * entry, and is proved out here. It is promoted into the OnlyKey source as an
- * `#ifdef OK_EMULATOR` gate only after it has been built and tested from this
- * list.
- *
- * The reason is ownership, not distrust of the change. The OnlyKey sources
- * under onlykey/ are separate repositories and a deliberate swap slot: any of
- * them can be replaced wholesale with a different fork or revision, and a
- * checkout carrying speculative local edits is no longer swappable. Worse, an
- * edit made directly in firmware that turns out to be wrong has to be found
- * and unpicked across a repo boundary, while an entry here is deleted in one
- * line and leaves nothing behind.
- *
- * So the order is: patch here, stage, build, test, and only then move it into
- * the source behind a gate - at which point the entry here is removed. A patch
- * that has not been through that sequence does not belong in firmware, and
- * firmware is not where an agent should be discovering whether an idea works.
- *
- * applyPatches() is what makes the intermediate state safe: an unmatched
- * pattern warns by name and fails the build, so a stale patch cannot silently
- * produce a binary that looks fine and misbehaves at runtime.
- *
- * ---------------------------------------------------------------------------
- * Patch register
- * ---------------------------------------------------------------------------
- * Every entry carries a `status`, and `npm run stage` prints the provisional
- * ones on every run. The register is here for reading; the `status` field is
- * the authority, so the two cannot drift.
- *
- *   PERMANENT   Stays in this list forever. There is no gate to promote it to.
- *               Adding one needs a reason as strong as the existing entry's.
- *
- *     core/kinetis.h
- *         Vendored Teensy core, not OnlyKey code, so it must not learn about
- *         the emulator. `__disable_irq()`/`__enable_irq()` are defined as
- *         Cortex-M inline assembly, and a header's own #define always wins
- *         over anything predefined from outside - okemu_prelude.h and -D both
- *         lose to it. Patching the staged copy is the only lever there is.
- *
- *     core/Print.cpp
- *         Also vendored Teensy core. Print::printf passes `(int)this` as a
- *         file descriptor, which truncates a 64-bit pointer; on Linux glibc's
- *         vdprintf then writes to a garbage fd and every Serial.printf()
- *         silently vanishes, and on Windows there is no vdprintf to call.
- *         Redirected to okemu_vdprintf(), which keeps the pointer and goes
- *         through Print::write. Same "core must not learn about the emulator"
- *         reasoning, so there is no gate to promote it to either.
- *
- *   PROVISIONAL Being proved out here before it lands in firmware. Promote to
- *               an `#ifdef OK_EMULATOR` gate once built and tested, then
- *               delete the entry. If one of these is still here in six
- *               months, either promote it or write down why it is permanent.
- *
- *     libraries/onlykey/okcore.h
- *         Windows flash shift: the four flash address roots move +0x10000 so
- *         the map clears Windows' reserved low 64 KB. Windows-only, gated on
- *         process.platform.
- *
- *         The original note said "not yet promoted because it has never been
- *         compiled on Windows". That is no longer true, and the evidence is
- *         now considerably more than the note asked for:
- *
- *           - compiles and links on Windows (clang-cl; MSVC cannot, the
- *             firmware uses __attribute__ in ~170 places)
- *           - boots, provisions, and persists flash and EEPROM across a
- *             restart. The nonce hash lands at file offset 0x3b000, which is
- *             flash 0x4b000 = flashstorestart + 2048 with the shift applied -
- *             exactly where the arithmetic predicts
- *           - exercises the crypto path the shift exists to protect:
- *             certified_hw sits at 0x15BB0 and okcrypto_split_sundae()
- *             dereferences it on every AES-GCM operation, including storing a
- *             PIN. Three PINs were set and survived a reboot
- *           - FIDO2 registration and authentication complete in a browser
- *           - OKEMU_FLASH_BASE still compiles to 0x0 off Windows (verified by
- *             compiling ok_hal.h, not by reading it), so Linux is unchanged,
- *             and the device .hex still builds for the MK20DX256
- *
- *         So the reason it is still PROVISIONAL is no longer "unproven". It
- *         is that promoting it means editing firmware under onlykey/, which
- *         is a swap slot and not this repo's to change - that is a deliberate
- *         decision for a human, not something to do because a test went
- *         green. Promote it to an `#ifdef OK_EMULATOR` gate when you want the
- *         firmware to own it, and delete this entry then.
+ * If you find yourself adding an entry here for an OnlyKey source file, gate it
+ * in that file instead.
  */
-/*
- * Windows cannot map the flash array at its real MK20DX256 base.
- *
- * The low 64 KB of user address space is permanently reserved as the
- * null-pointer partition, there is no vm.mmap_min_addr equivalent to lower,
- * and MapViewOfFileEx additionally wants a base aligned to the 64 KB
- * allocation granularity rather than to the page. So ok_hal.h shifts
- * OKEMU_FLASH_BASE up by exactly one granule on Windows, and the firmware's
- * address constants have to move with it or every flash access lands outside
- * the mapping.
- *
- * Why this is exact rather than approximate: every flash address in the
- * firmware derives from the four constants below, so shifting all four
- * together preserves every relative offset. Three things were checked rather
- * than assumed:
- *
- *   - FLASH_SECTOR_SIZE is 0x800 and 0x10000 / 0x800 = 32, so sector alignment
- *     is preserved and FLASH_ALIGN behaves identically.
- *   - FLASH_SIZE (0x3FFFF) is defined but never used - it appears only in
- *     flashkinetis.h and keywords.txt - so there is no bounds check to break.
- *   - flashkinetis.cpp is not compiled at all; okemu_flash.cpp replaces it,
- *     and its guards are written relative to OKEMU_FLASH_BASE.
- *
- * Without it, certified_hw (enckeysectoradr + 432 = 0x5BB0) is unmappable and
- * okcrypto_split_sundae() dereferences it on every AES-GCM operation: the
- * device boots, enumerates and answers HID perfectly, then segfaults on the
- * first thing that encrypts anything. That is the 0x10000 rung
- * onlykey-testing/EXPLAINER.md describes, and on Windows it would be the only
- * rung reachable.
- *
- * On the note above about gating OnlyKey sources in the file itself: that is
- * the better mechanism where the file is ours to change, and it was tried
- * first. It is not available here. okcore.h lives in a separate repository and
- * nothing under onlykey/ may be written to, which is precisely the situation
- * this patch list exists for - the swap slot has to stay swappable, and a
- * checkout carrying local edits is no longer swappable.
- *
- * The brittleness that argues against textual patches is real, and the
- * mitigation is already here: applyPatches() warns by name and sets a failing
- * exit code when a pattern does not match, so an upstream whitespace change
- * fails the build loudly instead of silently producing an unshifted binary
- * that segfaults on first use.
- */
-/*
- * Windows filesystems are case-insensitive, and the Arduino Time library ships
- * a header called Time.h in a directory that is on the include path. So when
- * the MSVC STL's <ctime> does `#include <time.h>`, it finds Arduino's Time.h
- * instead of the CRT's - and every translation unit that reaches <chrono>,
- * <thread> or <mutex> fails with a page of "no member named 'clock_t' in the
- * global namespace".
- *
- * There is no include-order fix: -I directories are searched before the system
- * ones for angled includes, so the Arduino header always wins.
- *
- * What makes this tractable is that Time.h is a single line - `#include
- * "TimeLib.h"` - and every reference to it in the firmware is quoted. So
- * stage.js copies TimeLib.h into .stage/wincompat/, binding.gyp swaps that
- * directory in for the Arduino one on Windows, and these patches point the
- * four staged users straight at TimeLib.h.
- *
- * Time.cpp and DateStrings.cpp are compiled from the Arduino tree rather than
- * from .stage, and their `#include "Time.h"` resolves against their own
- * directory before any -I path, so they are unaffected and need no patch.
- */
-const WINDOWS_TIME_H_USERS = [
-  'libraries/fido2/ctaphid.cpp',
-  'libraries/fido2/device.cpp',
-  'libraries/onlykey/okcore.cpp',
-  'sketch/OnlyKey.ino',
-];
-
-const WINDOWS_TIME_H_PATCHES = WINDOWS_TIME_H_USERS.map((f) => ({
-  file: f,
-  status: 'permanent',
-  platform: 'win32',
-  note: 'Time.h collides with the CRT\'s <time.h> on a case-insensitive '
-      + 'filesystem. Points at TimeLib.h, which is all Time.h forwards to.',
-  edits: [['#include "Time.h"', '#include "TimeLib.h"']],
-}));
-
-/*
- * OnlyKey.ino provides newlib syscall stubs so the bare-metal link resolves:
- *
- *     extern "C" {
- *       int _getpid(){ return -1;}
- *       int _kill(int pid, int sig){ return -1; }
- *       int _write(){return -1;}
- *     }
- *
- * The MSVC CRT has real _write() and _getpid(), so the stubs collide with
- * them - "lld-link: error: duplicate symbol: _write". Renaming is safer than
- * deleting: ok_hal.cpp calls the CRT's _write() for the backing files, and a
- * stub that always returns -1 winning the name would make every write to
- * flash.bin fail silently rather than fail to link.
- *
- * _kill has no CRT counterpart and is left alone.
- *
- * Line-at-a-time rather than one multi-line anchor, because the staged file's
- * line endings depend on how the firmware repo was checked out and a \n in
- * the pattern would simply stop matching on a CRLF clone.
- */
-const WINDOWS_SYSCALL_STUB_PATCH = {
-  file: 'sketch/OnlyKey.ino',
-  status: 'provisional',
-  platform: 'win32',
-  note: 'newlib syscall stubs collide with the MSVC CRT. Promote as an '
-      + '#if !defined(_WIN32) guard around the extern "C" block.',
-  edits: [
-    ['int _write(){return -1;}',  'int okemu_unused_write(){return -1;}'],
-    ['int _getpid(){ return -1;}', 'int okemu_unused_getpid(){ return -1;}'],
-  ],
-};
-
-/*
- * Shared globals re-declared in C++ linkage, which only links by luck.
- *
- * okcore.h wraps its declarations in `extern "C"` (line 83 to 380), so these
- * symbols have C linkage. Several .cpp files then re-declare them locally
- * WITHOUT the linkage specification - sometimes at block scope, sometimes
- * with a different type than the definition - and those declarations are C++.
- *
- * The Itanium C++ ABI does not mangle the names of global variables, so on
- * Linux `extern int outputmode;` and `extern "C" int outputmode;` both resolve
- * to the symbol `outputmode` and nobody notices. The MSVC ABI does mangle
- * them, so the C++ declarations become distinct symbols that nothing defines:
- * seven undefined symbols at link time, referenced from a dozen places.
- *
- * The linkage specification is added; the declared type is left exactly as it
- * was. That is deliberate. Some of these disagree with the definition -
- * outputmode and Profile_Offset are `int` in okcore.cpp and `uint8_t` in
- * several users, keyboard_buffer is an array declared as a pointer - and
- * correcting the types would change what those translation units read, which
- * is a firmware behaviour change dressed up as a build fix. With C linkage the
- * names resolve and the type confusion behaves exactly as it does on Linux
- * today. It stays a latent bug, and it stays visible here rather than being
- * quietly papered over.
- *
- * PROVISIONAL: the real repair is to include the header instead of
- * re-declaring, and to make the types agree with the definition. Both are
- * firmware changes.
- */
-const WINDOWS_C_LINKAGE_DECLS = {
-  'core/okemu_usb.cpp': [
-    'extern uint8_t setBuffer[9];',
-    'extern uint8_t keyboard_buffer[];',
-  ],
-  'libraries/fido2/ctaphid.cpp': ['extern int outputmode;'],
-  'libraries/fido2/device.cpp': [
-    'extern int Profile_Offset;',
-    'extern int large_buffer_offset;',
-    'extern uint8_t CRYPTO_AUTH;',
-  ],
-  'libraries/fido2/ok_extension.cpp': [
-    'extern uint8_t CRYPTO_AUTH;',
-    'extern int outputmode;',
-  ],
-  'libraries/onlykey/okcore.cpp': ['extern uint8_t KeyboardLayout[1];'],
-  'libraries/onlykey/okcrypto.cpp': [
-    'extern uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];',
-    'extern uint8_t CRYPTO_AUTH;',
-    'extern int large_buffer_offset;',
-    'extern uint8_t outputmode;',
-    'extern uint8_t setBuffer[9];',
-  ],
-  'libraries/onlykey/okpqc.cpp': [
-    'extern int      large_buffer_offset;',
-    'extern uint8_t  CRYPTO_AUTH;',
-    'extern int      outputmode;',
-  ],
-  'libraries/password/password.cpp': [
-    'extern uint8_t Profile_Offset;',
-    'extern int Profile_Offset;',
-  ],
-  'sketch/OnlyKey.ino': [
-    'extern uint8_t Profile_Offset;',
-    'extern uint8_t KeyboardLayout[1];',
-    'extern uint8_t CRYPTO_AUTH;',
-    'extern uint8_t outputmode;',
-    'extern int large_buffer_offset;',
-  ],
-};
-
-const WINDOWS_C_LINKAGE_PATCHES =
-  Object.entries(WINDOWS_C_LINKAGE_DECLS).map(([file, decls]) => ({
-    file,
-    status: 'provisional',
-    platform: 'win32',
-    note: 'Globals re-declared in C++ linkage; MSVC mangles variable names '
-        + 'and Itanium does not, so these resolve on Linux and not here. '
-        + 'Promote by including the header instead of re-declaring.',
-    /*
-     * Deleted rather than annotated. Adding `extern "C"` in place does not
-     * work: six of these are at block scope, and C++ allows a
-     * linkage-specification only at namespace scope ("expected
-     * unqualified-id"). And leaving them while the prelude also declares the
-     * symbol would be a redeclaration with a different type wherever the two
-     * disagree, which is most of them.
-     *
-     * Leading whitespace is not part of the pattern, so block-scope
-     * declarations match too, and every occurrence in the file is removed
-     * rather than just the first.
-     */
-    /*
-     * A line comment, not a block comment. One of these declarations -
-     * ctaphid.cpp's outputmode - sits inside a commented-out region, and a
-     * replacement containing a close-comment marker terminates that region
-     * early, turning the rest of it into live code and producing a cascade of
-     * syntax errors nowhere near the edit. Each declaration is alone on its
-     * line, so a line comment is safe in both contexts.
-     */
-    edits: decls.map((d) => [d, '// declared in okemu_prelude.h - see stage.js']),
-  }));
-
-const WINDOWS_FLASH_PATCH = {
-  file: 'libraries/onlykey/okcore.h',
-  status: 'provisional',
-  platform: 'win32',
-  note: 'Windows flash shift. Promote to an OK_EMULATOR/_WIN32 gate in '
-      + 'okcore.h once a Windows build has been proved out.',
-  edits: [
-    ['#define factorysectoradr 0x5800 //22528 - 23551',
-     '#define factorysectoradr 0x15800 //22528 - 23551, +0x10000 (Windows; see stage.js)'],
-    ['#define fwstartadr 0x6060',
-     '#define fwstartadr 0x16060'],
-    ['#define flashstorestart 0x3A800',
-     '#define flashstorestart 0x4A800'],
-    ['#define flashend 0x3FFFF',
-     '#define flashend 0x4FFFF'],
-  ],
-};
-
 const PATCHES = [
   {
     file: 'core/kinetis.h',
-    status: 'permanent',
-    note: 'Vendored Teensy core, not OnlyKey code. A header\'s own #define '
-        + 'beats anything predefined from outside, so there is no gate to '
-        + 'promote this to. It never leaves this list.',
     edits: [
       // `cpsid i` / `cpsie i` mask interrupts. There are none here - the
       // firmware runs on one thread against memory-backed peripherals - so
@@ -425,186 +105,394 @@ const PATCHES = [
        '#define __enable_irq()\t__asm__ volatile("":::"memory");'],
     ],
   },
-
   {
-    file: 'libraries/uECC/uECC.c',
-    status: 'provisional',
-    note: 'uECC_point_mult is called before it is declared. Promote as an '
-        + 'unconditional fix in uECC.c - a missing prototype is a bug on '
-        + 'every target, not a Windows one.',
+    /*
+     * The Teensy core's GPIO bit-band macro computes an address in the 32 MB
+     * alias region at 0x42000000. There is no alias region any more (see
+     * rewriteRegisterBlocks()), and the inline members that expand this are
+     * never called - so a call now fails to LINK against the undefined
+     * okemu_bitband_unsupported() instead of writing through an address
+     * nothing backs.
+     */
+    file: 'core/avr_emulation.h',
     edits: [
-      /*
-       * uECC_shared_secret2() calls uECC_point_mult() eleven lines before the
-       * definition, and the only declaration lives in uECC_vli.h behind
-       * `#if uECC_ENABLE_VLI_API`, which defaults to 0 and is set nowhere in
-       * this tree. So the call sees no prototype at all.
-       *
-       * C89 let that slide as an implicit `int uECC_point_mult()`, and GCC
-       * still only warns - which the POSIX build's -w hides. clang stops on
-       * it twice: once for the implicit declaration, and again because the
-       * implicit `int` return conflicts with the real `void` definition. The
-       * second one is not a warning and no -Wno- flag silences it.
-       *
-       * Note the function name: uECC_shared_secret2 is an OnlyKey addition
-       * rather than upstream micro-ecc, which is presumably how it was
-       * written against an API that is compiled out.
-       *
-       * Unconditional rather than Windows-gated, because a call with no
-       * visible prototype is wrong everywhere. Declaring it is what upstream
-       * should do; this is the staged stand-in until it does.
-       *
-       * PROVISIONAL - see the rule above. This wants to become a real
-       * declaration in uECC.c, at which point this entry goes away.
-       */
+      ['#define GPIO_BITBAND_ADDR(reg, bit) (((uint32_t)&(reg) - 0x40000000) * 32 + (bit) * 4 + 0x42000000)',
+       '#define GPIO_BITBAND_ADDR(reg, bit) (okemu_bitband_unsupported())'],
+    ],
+  },
+  {
+    /*
+     * Print::println(size_t) is ambiguous on LLP64 - i.e. on Windows.
+     *
+     * Print declares overloads up to `unsigned long` and stops. On the device
+     * and on Linux that is enough, because size_t IS unsigned long there
+     * (ILP32 and LP64 both). Windows is LLP64: long stays 32 bits and size_t
+     * is unsigned long long, which matches NONE of the overloads exactly and
+     * converts equally well to several, so the call is ambiguous:
+     *
+     *     okcrypto.cpp:1070: Serial.println(rsa.len);   // rsa.len is size_t
+     *     error: call to member function 'println' is ambiguous
+     *
+     * Twelve call sites across okcore.cpp and okcrypto.cpp, all of them debug
+     * prints. Adding the missing overloads fixes every one without touching a
+     * single call, and on Linux the new overloads are simply never selected.
+     *
+     * They narrow to unsigned long before printing. These print lengths and
+     * addresses from a 32-bit firmware, so nothing being printed can exceed
+     * 32 bits - and a println that truncates in some hypothetical future is a
+     * far smaller problem than a core that will not compile.
+     */
+    /*
+     * uECC calls uECC_point_mult() before it is declared.
+     *
+     * uECC.c:1098 calls it from inside uECC_shared_secret2(); the definition
+     * is at :1109, eleven lines later, and there is no prototype anywhere. In
+     * C89 that is legal - the compiler invents `int uECC_point_mult()`. C99
+     * dropped implicit declarations, compilers warned about it for twenty
+     * years, and clang 16 finally made it an error:
+     *
+     *     error: call to undeclared function 'uECC_point_mult'
+     *     error: conflicting types for 'uECC_point_mult'
+     *
+     * The second error is the consequence of the first: the invented `int`
+     * return type then clashes with the real `void` definition. So warning
+     * flags cannot fix this - -Wno-implicit-function-declaration silences the
+     * complaint but still invents the wrong declaration, and the conflict
+     * stands. A real prototype is the only fix.
+     *
+     * Declared immediately above the function that calls it rather than at the
+     * top of the file, so the addition sits next to what needs it and matches
+     * the definition that follows a few lines later.
+     */
+    file: 'libraries/uECC/uECC.c',
+    edits: [
       ['int uECC_shared_secret2(const uint8_t *public_key,',
-       '/* Declared here because uECC_vli.h only declares it under\n'
-       + ' * uECC_ENABLE_VLI_API, which is 0. Added by the emulator\'s stage\n'
-       + ' * patch - see emulator/scripts/stage.js. */\n'
-       + 'void uECC_point_mult(uECC_word_t *result,\n'
+       'void uECC_point_mult(uECC_word_t *result,\n'
        + '                     const uECC_word_t *point,\n'
        + '                     const uECC_word_t *scalar,\n'
-       + '                     uECC_Curve curve);\n'
-       + '\n'
+       + '                     uECC_Curve curve);\n\n'
        + 'int uECC_shared_secret2(const uint8_t *public_key,'],
     ],
   },
-
+  {
+    /*
+     * RNG2 IS DECLARED WITH THE WRONG SECOND PARAMETER, and on Windows that
+     * is the 12-webauthn-tunnel crash.
+     *
+     * The definition, okcore.cpp:7630, and okcore.h:369:
+     *
+     *     int RNG2(uint8_t *dest, unsigned size)
+     *
+     * But tweetnacl.c:88 and justhashtweetnacl.c:86 both declare:
+     *
+     *     extern int RNG2(u8 *,u8);   //Max size 255
+     *
+     * C has no overloading, so both resolve to the one symbol: the caller
+     * passes an 8-bit value and the callee reads a 32-bit one.
+     *
+     * WHY THIS IS HARMLESS EVERYWHERE ELSE. AAPCS and the SysV x86-64 ABI
+     * require the CALLER to widen a narrow argument to a full register, so
+     * the callee reading `unsigned` sees 32 and nothing is wrong. The
+     * Microsoft x64 ABI does not: the upper bits of a narrow argument are
+     * explicitly undefined, and the callee may not rely on them. So on
+     * Windows `size` is 32 in its low byte and whatever was already in the
+     * register above that.
+     *
+     * RNG2 then hands that to RNG.rand(dest, size) over crypto_box_keypair's
+     * 32-byte buffer. A smashed stack is also why nothing could report the
+     * fault: exception dispatch itself needs a sane stack, which is why
+     * neither the vectored handler nor the SEH frame ever ran, and why 8 MB,
+     * 64 MB and a stack guarantee all made no difference.
+     *
+     * Traced by console bisect: "A set_time returned" and "B memset done"
+     * both print, RNG2's own "Generating random number of size" never does.
+     *
+     * Scoped to win32 because the Linux build has been correct by ABI luck
+     * for years and this is not the place to change it - but the declarations
+     * should simply be fixed upstream, where it costs nothing on any target.
+     */
+    platform: 'win32',
+    file: 'libraries/tweetnacl/tweetnacl.c',
+    edits: [
+      ['extern int RNG2(u8 *,u8); //Max size 255',
+       'extern int RNG2(u8 *,unsigned); /* must match okcore.cpp:7630 - see stage.js */'],
+    ],
+  },
+  {
+    /* The same declaration, the same reason. See the tweetnacl entry above. */
+    platform: 'win32',
+    file: 'libraries/justhashtweetnacl/justhashtweetnacl.c',
+    edits: [
+      ['extern int RNG2(u8 *,u8); //Max size 255',
+       'extern int RNG2(u8 *,unsigned); /* must match okcore.cpp:7630 - see stage.js */'],
+    ],
+  },
+  {
+    /*
+     * Rebase the firmware's flash addresses onto OKEMU_FLASH_BASE.
+     *
+     * The firmware reads its own storage through raw pointers at absolute
+     * addresses, which works on Linux because the HAL maps the flash array at
+     * address 0 - the MK20DX256's real base. Windows reserves the bottom 64 KB
+     * of every process, cannot be persuaded otherwise, and the next rung up
+     * leaves certified_hw at 0x5BB0 unmapped, which faults on the first
+     * AES-GCM operation. See ok_hal.h.
+     *
+     * So the origin moves instead. Only four literals exist; everything else
+     * in okcore.h derives from them, and every offset and every difference
+     * between them is unchanged. On Windows OKEMU_FLASH_BASE is a variable the
+     * HAL sets once at init, declared in ok_hal.h.
+     *
+     * The trailing `//22528 - 23551` on factorysectoradr is deliberately NOT
+     * part of the pattern: older firmware releases define the same address
+     * with no comment, and a pattern carrying the comment would miss on those
+     * while the other three still applied - leaving one address unrebased in a
+     * tree that otherwise looks fine. Matching the define alone applies
+     * everywhere, and any existing comment simply trails the replacement,
+     * which is still valid C.
+     */
+    platform: 'win32',
+    file: 'libraries/onlykey/okcore.h',
+    edits: [
+      ['#define factorysectoradr 0x5800',
+       '#define factorysectoradr (OKEMU_FLASH_BASE + 0x5800)'],
+      ['#define fwstartadr 0x6060',
+       '#define fwstartadr (OKEMU_FLASH_BASE + 0x6060)'],
+      ['#define flashstorestart 0x3A800',
+       '#define flashstorestart (OKEMU_FLASH_BASE + 0x3A800)'],
+      ['#define flashend 0x3FFFF',
+       '#define flashend (OKEMU_FLASH_BASE + 0x3FFFF)'],
+    ],
+  },
+  {
+    /*
+     * Declarations that disagree with their definitions.
+     *
+     * The MSVC ABI mangles a global variable's TYPE and LINKAGE into its
+     * symbol; the Itanium ABI used on ARM and Linux mangles neither, so a
+     * global's symbol is just its name and a wrong declaration still links.
+     * These are the ones lld-link caught, each verified against the built
+     * objects with llvm-nm rather than assumed:
+     *
+     *   KeyboardLayout   defined  B KeyboardLayout        C linkage
+     *   keyboard_buffer  defined  B keyboard_buffer       C linkage
+     *   setBuffer        defined  B setBuffer             C linkage
+     *   Profile_Offset   defined  B ?Profile_Offset@@3HA  C++, and it is INT
+     *   outputmode       defined  B ?outputmode@@3HA      C++, and it is INT
+     *
+     * The int/uint8_t pairs are the interesting ones: Profile_Offset is
+     * `int Profile_Offset = 0` in okcore.cpp:106, yet password.cpp declares it
+     * uint8_t on lines 126 and 296 and int on line 128 - three declarations,
+     * two of them wrong, two lines apart. On a little-endian target reading
+     * the low byte of an int usually gives the right answer, which is why this
+     * has never been noticed.
+     *
+     * okpqc.cpp carries a comment about exactly this hazard: a
+     * packet_buffer_details declared uint32_t against a uint8_t definition
+     * gave the wrong stride and produced two confirmed hardware failures. Same
+     * class of defect; this time a linker found it first.
+     *
+     * Windows-scoped for now - all five belong upstream, where fixing them
+     * costs nothing on any target and removes a real trap.
+     */
+    platform: 'win32',
+    file: 'libraries/onlykey/okcrypto.cpp',
+    edits: [
+      /*
+       * setBuffer is declared inside a function at :855, and a linkage
+       * specification may only appear at namespace scope - `extern "C"` there
+       * is a syntax error. Declaring it once up here instead is enough: the
+       * block-scope `extern` at :855 then redeclares an entity that already
+       * has C linkage and inherits it, so that line needs no edit at all.
+       */
+      ['extern uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];',
+       'extern "C" uint8_t keyboard_buffer[KEYBOARD_BUFFER_SIZE];  /* C linkage: stage.js */\n'
+       + 'extern "C" uint8_t setBuffer[9];  /* ditto; declared in-function at :855 */'],
+      /*
+       * The `outputmode` edit is GONE, because upstream carries it now.
+       *
+       * okcrypto.cpp declared it `extern uint8_t` while okcore.cpp defines it
+       * `int`, and this rewrote the declaration. libraries HEAD already reads
+       * `extern int outputmode;   /* defined as int in okcore.cpp ... ` at
+       * :174, so the pattern no longer exists and the patch failed to apply -
+       * which is a non-zero exit from stage.js, so `npm run stage && node-gyp`
+       * stopped before the compiler ever ran.
+       *
+       * Removed rather than left to warn: this is the same direction as
+       * libraries@2ec3a12, which moved the emulator's textual patches
+       * in-source precisely because "any whitespace change here silently
+       * un-applied a fix". A patch upstream has absorbed is one fewer thing
+       * that can un-apply.
+       */
+    ],
+  },
+  {
+    platform: 'win32',
+    file: 'libraries/onlykey/okcore.cpp',
+    edits: [
+      ['extern uint8_t KeyboardLayout[1];',
+       'extern "C" uint8_t KeyboardLayout[1];  /* keylayouts.c is C - stage.js */'],
+    ],
+  },
+  {
+    platform: 'win32',
+    file: 'libraries/password/password.cpp',
+    /* Both occurrences; line 128 already says int and needs no edit. */
+    edits: [
+      ['\textern uint8_t Profile_Offset;',
+       '\textern int Profile_Offset;   /* okcore.cpp:106 defines it int - stage.js */'],
+    ],
+  },
+  {
+    platform: 'win32',
+    file: 'sketch/OnlyKey.ino',
+    edits: [
+      ['extern uint8_t Profile_Offset;',
+       'extern int Profile_Offset;   /* okcore.cpp:106 defines it int - stage.js */'],
+      ['extern uint8_t KeyboardLayout[1];',
+       'extern "C" uint8_t KeyboardLayout[1];  /* keylayouts.c is C - stage.js */'],
+      ['extern uint8_t outputmode;',
+       'extern int outputmode;   /* okcore.cpp:276 defines it int - stage.js */'],
+    ],
+  },
+  {
+    /*
+     * okpqc.cpp declares firmware globals without extern "C".
+     *
+     * Lines 49-70 declare rsa_private_key, large_buffer_offset, outputmode and
+     * friends as plain C++ externs. The definitions in okcore.cpp have C
+     * linkage, so the names do not match - but only on an ABI that MANGLES
+     * VARIABLES. The Itanium C++ ABI does not: a global's symbol is just its
+     * name, so ARM and Linux link this happily. MSVC does mangle them, and
+     * lld-link reports what was always true:
+     *
+     *     undefined symbol: int large_buffer_offset
+     *       referenced by okpqc.obj          (?large_buffer_offset@@3HA)
+     *       defined in    okcore.obj          (large_buffer_offset)
+     *
+     * The file already spells its FUNCTION imports `extern "C"` a few lines
+     * above; the variables were simply missed. Note the comment already in
+     * this block about packet_buffer_details, where a declaration that
+     * disagreed with its definition produced two confirmed hardware failures -
+     * this is the same hazard, caught by a linker instead of by a user.
+     *
+     * Scoped to Windows only because the Linux build has been shipping this
+     * way for years and this patch is not the place to change it. It belongs
+     * upstream in okpqc.cpp for every target.
+     */
+    platform: 'win32',
+    file: 'libraries/onlykey/okpqc.cpp',
+    edits: [
+      /*
+       * ONLY these two. The definitions in okcore.cpp are not consistent with
+       * one another - llvm-nm on the built objects says so plainly:
+       *
+       *   large_buffer_offset    B large_buffer_offset         <- C linkage
+       *   CRYPTO_AUTH            B CRYPTO_AUTH                 <- C linkage
+       *   outputmode             B ?outputmode@@3HA            <- C++
+       *   large_buffer           D ?large_buffer@@3PEAEEA      <- C++
+       *   ... and six more, all C++
+       *
+       * so a blanket extern "C" over the whole block only moves the failure
+       * to the other eight. Each declaration has to match the linkage of the
+       * definition it names, and these are the two that are C.
+       */
+      ['extern int      large_buffer_offset;',
+       'extern "C" int  large_buffer_offset;   /* C linkage: see stage.js */'],
+      ['extern uint8_t  CRYPTO_AUTH;',
+       'extern "C" uint8_t CRYPTO_AUTH;        /* C linkage: see stage.js */'],
+    ],
+  },
+  {
+    /*
+     * OnlyKey.ino provides newlib syscall stubs - _getpid, _kill, _write - so
+     * that a bare-metal link resolves them. Nothing in the firmware calls any
+     * of them; they exist to satisfy newlib.
+     *
+     * Against a real libc they are redundant, and _write collides outright:
+     *
+     *     lld-link: error: duplicate symbol: _write
+     *       defined at .stage/sketch/OnlyKey.ino:246
+     *       defined at libucrt.lib(write.obj)
+     *
+     * This is the same shape as the recvmsg collision binding.gyp describes -
+     * firmware written for a freestanding target reusing names libc owns. On
+     * Linux -Bsymbolic resolves it at link time; the Windows toolchain has no
+     * equivalent because it never had the problem, so the fix is to stop
+     * defining the symbol.
+     *
+     * Renamed rather than deleted, so the stub stays visible next to its two
+     * siblings and nothing looks mysteriously absent. Scoped to Windows
+     * because only the UCRT collides - glibc's _write is resolved by
+     * -Bsymbolic and the Linux build has been shipping this way for years.
+     */
+    platform: 'win32',
+    file: 'sketch/OnlyKey.ino',
+    edits: [
+      ['  int _write(){return -1;}',
+       '  int okemu_unused_write(){return -1;}  /* renamed: see stage.js */'],
+    ],
+  },
   {
     file: 'core/Print.h',
-    status: 'permanent',
-    platform: 'win32',
-    note: 'Vendored Teensy core. Adds long long overloads so uintptr_t and '
-        + 'size_t are not ambiguous on LLP64, where unsigned long is 32-bit.',
     edits: [
-      /*
-       * Windows is LLP64: `long` is 32 bits and pointers are 64. Linux is
-       * LP64, where `long` is 64 bits.
-       *
-       * Print's integer overload set stops at `unsigned long`. On Linux that
-       * happens to be an exact match for uintptr_t and size_t, so
-       * `Serial.println(adr, HEX)` resolves cleanly. On Windows there is no
-       * exact match and every candidate - int, unsigned int, long, unsigned
-       * long, double - is an equally ranked conversion, so the call is
-       * ambiguous. okcore.cpp and okcrypto.cpp hit this a dozen times, all in
-       * DEBUG traces printing addresses and lengths.
-       *
-       * Adding exact matches for the 64-bit types fixes every such call site
-       * at once, including ones not written yet, which casting at each site
-       * would not.
-       *
-       * They delegate to the 32-bit path, so a value above 2^32 would be
-       * truncated in debug output. That is acceptable and bounded here: every
-       * current caller passes a flash address inside a 256 KB map or a key
-       * length, and both are far below the limit. It is called out rather
-       * than hidden because on Linux the same call prints the full 64 bits.
-       *
-       * PERMANENT. Print.h is vendored Teensy code and must not learn about
-       * the emulator, so there is no OK_EMULATOR gate to promote this to.
-       */
-      ['\tsize_t print(unsigned long n, int base)\t\t{ return printNumber(n, base, 0); }',
-       '\tsize_t print(unsigned long n, int base)\t\t{ return printNumber(n, base, 0); }\n'
-       + '\n'
-       + '\t/* LLP64 hosts: uintptr_t/size_t are long long, not long. Added by\n'
-       + '\t * the emulator\'s stage patch - see emulator/scripts/stage.js. */\n'
-       + '\tsize_t print(long long n)\t\t\t{ return print((long)n); }\n'
-       + '\tsize_t print(unsigned long long n)\t\t{ return print((unsigned long)n); }\n'
-       + '\tsize_t print(long long n, int base)\t\t{ return print((long)n, base); }\n'
-       + '\tsize_t print(unsigned long long n, int base)\t{ return print((unsigned long)n, base); }'],
-
+      ['\tsize_t println(unsigned long n)\t\t\t{ return print(n) + println(); }',
+       '\tsize_t println(unsigned long n)\t\t\t{ return print(n) + println(); }\n'
+       + '\tsize_t println(unsigned long long n)\t\t{ return print((unsigned long)n) + println(); }\n'
+       + '\tsize_t println(long long n)\t\t\t{ return print((long)n) + println(); }'],
       ['\tsize_t println(unsigned long n, int base)\t{ return print(n, base) + println(); }',
        '\tsize_t println(unsigned long n, int base)\t{ return print(n, base) + println(); }\n'
-       + '\n'
-       + '\tsize_t println(long long n)\t\t\t{ return print(n) + println(); }\n'
-       + '\tsize_t println(unsigned long long n)\t\t{ return print(n) + println(); }\n'
-       + '\tsize_t println(long long n, int base)\t\t{ return print(n, base) + println(); }\n'
-       + '\tsize_t println(unsigned long long n, int base)\t{ return print(n, base) + println(); }'],
+       + '\tsize_t println(unsigned long long n, int base)\t{ return print((unsigned long)n, base) + println(); }\n'
+       + '\tsize_t println(long long n, int base)\t\t{ return print((long)n, base) + println(); }'],
     ],
   },
-
-  {
-    file: 'core/Print.cpp',
-    status: 'permanent',
-    platform: 'win32',
-    note: 'Teensy\'s _write() collides with the MSVC CRT\'s _write(). Renamed '
-        + 'so the CRT keeps the name.',
-    edits: [
-      /*
-       * Print.cpp defines
-       *
-       *     extern "C" __attribute__((weak))
-       *     int _write(int file, char *ptr, int len)
-       *
-       * as newlib's syscall stub, so that vdprintf's output finds its way
-       * back to a Print object. The MSVC CRT has its own _write(), and COFF
-       * has no real weak-symbol semantics, so the two collide outright:
-       * "lld-link: error: duplicate symbol: _write".
-       *
-       * Renaming rather than deleting, for two reasons. It keeps the diff
-       * honest about what upstream contains. And it matters which one wins:
-       * ok_hal.cpp calls the CRT's _write() for the backing files, and if
-       * Teensy's definition took the name instead, those calls would cast a
-       * file descriptor to a Print * and write through it. That would not
-       * fail to link - it would corrupt flash.bin.
-       *
-       * Nothing calls it any more in either case: the Print::printf patch
-       * below routes through okemu_vdprintf(), which uses Print::write
-       * directly.
-       *
-       * PERMANENT - vendored Teensy code, no OK_EMULATOR gate to promote to.
-       */
-      ['int _write(int file, char *ptr, int len)',
-       'int okemu_unused_teensy_write(int file, char *ptr, int len)'],
-    ],
-  },
-
-  {
-    file: 'core/Print.cpp',
-    status: 'permanent',
-    note: 'Vendored Teensy core. Print::printf passes `(int)this` as a file '
-        + 'descriptor, which truncates a 64-bit pointer. Redirected to '
-        + 'okemu_vdprintf() with the pointer intact.',
-    edits: [
-      /*
-       * Teensyduino writes Print::printf as
-       *
-       *     return vdprintf((int)this, format, ap);
-       *
-       * with a weak `_write(int file, ...)` just above it that casts the
-       * "descriptor" back to a Print *. On the device that round-trips
-       * through newlib's stdio and works, because sizeof(int) equals
-       * sizeof(void *) there.
-       *
-       * On a 64-bit host it truncates the pointer. Linux then reaches glibc's
-       * vdprintf, which knows nothing about _write and treats the truncated
-       * value as a real descriptor - so the write fails with EBADF and every
-       * Serial.printf() in the firmware disappears, silently. Windows has no
-       * vdprintf in its CRT at all, which is how this surfaced.
-       *
-       * Unconditional, not Windows-gated: the truncation is wrong on every
-       * 64-bit host, so this is a correction rather than a portability shim.
-       * See core-override/okemu_printf.cpp.
-       *
-       * PERMANENT. Print.cpp is vendored Teensy code, not OnlyKey code, so it
-       * must not learn about the emulator - there is no OK_EMULATOR gate to
-       * promote this to.
-       */
-      ['return vdprintf((int)this, format, ap);',
-       'return okemu_vdprintf((void *)this, format, ap);'],
-      ['return vdprintf((int)this, (const char *)format, ap);',
-       'return okemu_vdprintf((void *)this, (const char *)format, ap);'],
-    ],
-  },
-
-  /* Windows only via its `platform` field: on Linux the flash maps at its
-   * real base, and shifting the constants there would move the firmware off
-   * its own storage. */
-  WINDOWS_FLASH_PATCH,
-  WINDOWS_SYSCALL_STUB_PATCH,
-
-  /* Windows only, by their `platform` field - see WINDOWS_TIME_H_USERS. */
-  ...WINDOWS_TIME_H_PATCHES,
-  ...WINDOWS_C_LINKAGE_PATCHES,
 ];
+
+/*
+ * Remove Arduino's Time.h from the include path.
+ *
+ * The Time library ships two headers: TimeLib.h, which has the content, and
+ * Time.h, which is one line - `#include "TimeLib.h"`. Its directory has to be
+ * on the include path because the firmware includes "Time.h" from several
+ * places.
+ *
+ * On a case-insensitive filesystem - Windows and macOS both - that makes
+ * `#include <time.h>` resolve to Arduino's Time.h rather than the C library's,
+ * because -I directories are searched before the sysroot. struct timespec then
+ * never gets declared, <ctime> finds none of the C time functions, and every
+ * file in the HAL that sleeps or reads the clock fails to compile. Linux never
+ * sees this, which is why this built there for years and not here.
+ *
+ * Deleting the one-line shim and pointing its consumers straight at TimeLib.h
+ * removes the collision for good rather than per-file. Done on every platform:
+ * the result is identical code, and a Linux-only spelling would mean the two
+ * trees drift.
+ *
+ * Ported from ok-rn/android/okemu/scripts/stage.js, which hit this first while
+ * building for Android from a Windows host.
+ */
+function defuseTimeHeader() {
+  const shim = path.join(STAGE_LIB, 'Time', 'Time.h');
+  if (fs.existsSync(shim)) fs.rmSync(shim);
+
+  let rewritten = 0;
+  const re = /(#\s*include\s*)(["<])Time\.h([">])/g;
+
+  const walkAll = (dir) => {
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) { walkAll(p); continue; }
+      if (!/\.(c|cpp|h|hpp|ino)$/.test(ent.name)) continue;
+      const text = fs.readFileSync(p, 'utf8');
+      if (!re.test(text)) { re.lastIndex = 0; continue; }
+      re.lastIndex = 0;
+      fs.writeFileSync(p, text.replace(re, '$1$2TimeLib.h$3'));
+      rewritten++;
+    }
+  };
+  walkAll(STAGE);
+  return rewritten;
+}
 
 function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
 
@@ -621,21 +509,14 @@ function copyDir(src, dst) {
 
 function applyPatches() {
   let applied = 0, missing = 0;
-  const provisional = [];
-
   for (const p of PATCHES) {
-    /* Host-specific entries. No `platform` means every host. */
-    if (p.platform && p.platform !== process.platform) continue;
-
     /*
-     * An entry with no status predates the register, or was added without
-     * one. Treat that as provisional rather than permanent: the failure mode
-     * of reviewing a permanent patch again is a wasted minute, while the
-     * failure mode of forgetting a provisional one is a firmware change that
-     * never lands and a patch that quietly becomes load-bearing.
+     * A patch may be scoped to one host platform. Used sparingly - a fix that
+     * is correct everywhere should apply everywhere, so the trees do not
+     * drift - but some collisions only exist against one libc, and silently
+     * changing the Linux build to fix Windows would be worse than the drift.
      */
-    if ((p.status || 'provisional') === 'provisional') provisional.push(p);
-
+    if (p.platform && p.platform !== process.platform) continue;
     const target = path.join(STAGE, p.file);
     if (!fs.existsSync(target)) {
       console.error(`stage: WARNING - patch file absent: ${p.file}`);
@@ -660,40 +541,197 @@ function applyPatches() {
     );
     process.exitCode = 1;
   }
-
-  /*
-   * Say out loud what is still sitting in the staging ground. A provisional
-   * patch is unfinished work by definition, and the way it goes wrong is not
-   * by breaking - it is by working, and being forgotten, until the patch list
-   * is quietly carrying firmware behaviour nobody reviews.
-   */
-  if (provisional.length) {
-    console.error('');
-    console.error('stage: PROVISIONAL patches applied - not yet in firmware:');
-    for (const p of provisional) {
-      console.error(`  ${p.file}`);
-      if (p.note) {
-        for (const line of wrap(p.note, 68)) console.error(`      ${line}`);
-      }
-    }
-    console.error('  Promote each to an #ifdef OK_EMULATOR gate in the source');
-    console.error('  once it has been built and tested from here, then delete');
-    console.error('  the entry. See the rule above PATCHES.');
-  }
-
   return applied;
 }
 
-/* Wrap a note to a column so the reminder stays readable in a build log. */
-function wrap(text, width) {
-  const out = [];
-  let line = '';
-  for (const word of text.split(/\s+/)) {
-    if (line && line.length + 1 + word.length > width) { out.push(line); line = ''; }
-    line = line ? `${line} ${word}` : word;
+/*
+ * Rewrite the register blocks out of the staged sources - NO FIXED ADDRESSES.
+ *
+ * Every register in kinetis.h is a literal absolute address:
+ *
+ *     #define FTFL_FSEC  (*(const uint8_t *)0x40020002)
+ *     #define SYST_CVR   (*(volatile uint32_t *)0xE000E018)
+ *
+ * This emulator used to mmap those windows at their real addresses, which is
+ * a bet against whatever the host runtime put there first - and it was lost:
+ * the bit-band alias collided with V8's heap and crash-looped the daemon, and
+ * ok-rn's copy of this HAL could not start on a phone whose runtime reserves
+ * 0x40000000 (see src/okemu_regs.cpp). So both blocks are ordinary arrays and
+ * every register is redirected into them: the arithmetic still resolves at
+ * compile time against the array, so the generated code is the same shape it
+ * always was.
+ *
+ * ONE PATTERN FOR EVERY SHAPE. Register casts come as `volatile`/`const`,
+ * with uneven spacing (`uint8_t  *`), as struct types (KINETIS_MCG_t), as the
+ * DMA `volatile const void * volatile *`, and inside the NVIC macros that do
+ * pointer arithmetic on a bare cast. So this matches the CAST,
+ * `(<type> *)0xAAAAAAAA`, wherever it appears, and wraps only the literal:
+ *
+ *     (*(const uint8_t *)0x40020002)   ->  (*(const uint8_t *)OKEMU_PBRIDGE(0x40020002))
+ *     ((volatile uint32_t *)0xE000E100 + n)  ->  ((volatile uint32_t *)OKEMU_SCS(0xE000E100) + n)
+ *
+ * Blanket, not targeted: only ~15 registers are really used, but a future
+ * firmware revision reaching a new one must not fault on some host.
+ *
+ * And then CHECKED. Anything that still casts a bridge or system-block
+ * literal afterwards - in kinetis.h or in any staged source - fails the
+ * stage, so a new raw hardware address breaks the BUILD rather than a host
+ * that happens to have something mapped there. okcore.h's CPU_RESTART_ADDR is
+ * one such literal outside kinetis.h; it is rewritten by the same pass.
+ *
+ * A header's own #define always wins over anything predefined from outside, so
+ * this cannot be done with -D or a force-included shim. Patching the staged
+ * copy is the only lever, exactly as it is for the CPSID asm above.
+ *
+ * Ported from ok-rn/android/okemu/scripts/stage.js.
+ */
+const REGISTER_BLOCKS = [
+  { name: 'peripheral bridge', base: 0x40000000, len: 0x00100000,
+    macro: 'OKEMU_PBRIDGE', array: 'okemu_pbridge_base' },
+  { name: 'system block', base: 0xE0000000, len: 0x00100000,
+    macro: 'OKEMU_SCS', array: 'okemu_scs_base' },
+];
+
+/* `(<type> *)0xAAAAAAAA` - a type that starts with a name and ends in `*`,
+ * with anything but parentheses between (spaces, const, `* volatile`). */
+const CAST_LITERAL = /\(([A-Za-z_][^()]*?\*)\)\s*(0x[0-9A-Fa-f]{8})\b/g;
+
+/* Arduino libraries binding.gyp includes straight from the install. */
+const UNSTAGED_INCLUDE_LIBS = ['EEPROM', 'ADC'];
+
+function registerBlockFor(address) {
+  return REGISTER_BLOCKS.find(b => address >= b.base && address < b.base + b.len);
+}
+
+/* Casts of a block address still left in `text` (comment lines skipped). */
+function rawRegisterCasts(text) {
+  const hits = [];
+  text.split(/\r?\n/).forEach((line, i) => {
+    if (/^\s*(\/\/|\/?\*)/.test(line)) return;
+    for (const m of line.matchAll(CAST_LITERAL)) {
+      if (registerBlockFor(parseInt(m[2], 16))) hits.push({ line: i + 1, text: line.trim() });
+    }
+  });
+  return hits;
+}
+
+function rewriteRegisterBlocks() {
+  const target = path.join(STAGE_CORE, 'kinetis.h');
+  let text = fs.readFileSync(target, 'utf8');
+
+  const counts = Object.fromEntries(REGISTER_BLOCKS.map(b => [b.name, 0]));
+  const rebase = (whole, type, addr) => {
+    const block = registerBlockFor(parseInt(addr, 16));
+    if (!block) return whole;       /* 0xF8.. / 0xF0003.. : Teensy LC only */
+    counts[block.name]++;
+    return `(${type})${block.macro}(${addr})`;
+  };
+  text = text.replace(CAST_LITERAL, rebase);
+
+  for (const b of REGISTER_BLOCKS) {
+    if (!counts[b.name]) {
+      console.error(`stage: WARNING - no ${b.name} registers rewritten`);
+      process.exitCode = 1;
+      return counts;
+    }
   }
-  if (line) out.push(line);
-  return out;
+
+  /*
+   * The macros have to be visible before the first use. kinetis.h opens with an
+   * include guard; put the declarations immediately after it so every consumer
+   * of the header gets them, in whatever order they include things.
+   *
+   * Matched as a regex rather than a literal: checkouts cloned on Windows
+   * carry CRLF, and a multi-line literal would silently fail to match.
+   *
+   * #ifndef-guarded because src/ok_hal.h defines the same two macros for the
+   * HAL's own register accesses, and a translation unit may see both.
+   */
+  const anchor = /#ifndef\s+_kinetis_h_\r?\n#define\s+_kinetis_h_\r?\n/;
+  if (!anchor.test(text)) {
+    console.error('stage: WARNING - kinetis.h include guard not where expected');
+    process.exitCode = 1;
+    return counts;
+  }
+  const decl =
+    '\n/* Injected by emulator/scripts/stage.js - see rewriteRegisterBlocks(). */\n' +
+    '#ifdef __cplusplus\nextern "C" {\n#endif\n' +
+    REGISTER_BLOCKS.map(b => `extern unsigned char ${b.array}[0x${b.len.toString(16).toUpperCase()}];\n`).join('') +
+    /* Bit-band: nothing compiled uses it, and there is no alias region any
+     * more. Declared, never defined - see the avr_emulation.h patch. */
+    'extern unsigned long okemu_bitband_unsupported(void);\n' +
+    '#ifdef __cplusplus\n}\n#endif\n' +
+    REGISTER_BLOCKS.map(b =>
+      `#ifndef ${b.macro}\n` +
+      `#define ${b.macro}(a) ((void *)(${b.array} + ((uintptr_t)(a) - 0x${b.base.toString(16).toUpperCase()}UL)))\n` +
+      '#endif\n').join('') +
+    '\n';
+  text = text.replace(anchor, (m) => m + decl);
+  fs.writeFileSync(target, text);
+
+  /*
+   * EVERY STAGED SOURCE, not just kinetis.h. Libraries carry their own copies
+   * of register definitions (ok-rn's first run of the check below found
+   * InternalTemperature.h defining SIM_SDID as a raw
+   * `*(const uint32_t *)0x40048024`), and okcore.h has CPU_RESTART_ADDR. They
+   * all see the macros through kinetis.h (every Arduino translation unit
+   * includes it); a file that did not would fail to COMPILE, which is the
+   * safe direction.
+   */
+  const sources = [];
+  const walk = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) { walk(full); continue; }
+      if (/\.(c|cpp|h|hpp|ino)$/i.test(ent.name) && full !== target) sources.push(full);
+    }
+  };
+  walk(STAGE_CORE);
+  walk(STAGE_LIB);
+  walk(STAGE_SKETCH);
+  for (const full of sources) {
+    const before = fs.readFileSync(full, 'utf8');
+    const after = before.replace(CAST_LITERAL, rebase);
+    if (after !== before) fs.writeFileSync(full, after);
+  }
+
+  /* The check: anything still casting a block address fails the stage. */
+  const leftovers = rawRegisterCasts(text).map(h => `core/kinetis.h:${h.line}: ${h.text}`);
+  for (const full of sources) {
+    for (const h of rawRegisterCasts(fs.readFileSync(full, 'utf8'))) {
+      leftovers.push(`${path.relative(STAGE, full)}:${h.line}: ${h.text}`);
+    }
+  }
+  /*
+   * AND THE HEADERS THE BUILD TAKES FROM OUTSIDE THE STAGE. binding.gyp puts
+   * two libraries of the Arduino install on the include path unstaged (EEPROM,
+   * ADC), so nothing above rewrites them - and they are shared with every
+   * other build on the machine, so this does not either. It only CHECKS them:
+   * a raw register address there would compile against memory nothing backs.
+   * The fix for a hit is to stage that library and let the pass above rewrite
+   * it. (Found by compiling the firmware without -w: ADC_Module.h is included
+   * this way. It names no register by address today - only the bit-band
+   * macro, inside inline members nothing calls.)
+   */
+  for (const lib of UNSTAGED_INCLUDE_LIBS) {
+    const dir = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries', lib);
+    if (!fs.existsSync(dir)) continue;
+    for (const ent of fs.readdirSync(dir)) {
+      if (!/\.(h|hpp)$/i.test(ent)) continue;
+      for (const h of rawRegisterCasts(fs.readFileSync(path.join(dir, ent), 'utf8'))) {
+        leftovers.push(`(Arduino install, unstaged) libraries/${lib}/${ent}:${h.line}: ${h.text}`);
+      }
+    }
+  }
+  if (leftovers.length) {
+    console.error('stage: ERROR - a raw hardware register address survived the rewrite.\n' +
+      '  The emulator must not depend on a fixed address (it collides with the\n' +
+      '  host runtime). Rebase these onto OKEMU_PBRIDGE / OKEMU_SCS:\n' +
+      leftovers.slice(0, 20).map(l => `    ${l}`).join('\n'));
+    process.exitCode = 1;
+  }
+  return counts;
 }
 
 function main() {
@@ -741,37 +779,32 @@ function main() {
   copyDir(path.join(FW, 'OnlyKey'), STAGE_SKETCH);
 
   /*
-   * 5b. Windows: a Time.h-free home for TimeLib.h.
-   *
-   * The Arduino Time library's directory cannot stay on the include path here,
-   * because Time.h and the CRT's <time.h> are the same filename to a
-   * case-insensitive filesystem. binding.gyp swaps this directory in for it;
-   * see WINDOWS_TIME_H_USERS above for the whole story.
+   * Arduino's Time library is staged rather than included from the Arduino
+   * checkout, so that defuseTimeHeader() below has somewhere to delete Time.h
+   * from. Leaving it in place would mean editing the Arduino tree, which is
+   * shared with every other build on this machine.
    */
-  let wincompat = 0;
-  if (process.platform === 'win32') {
-    const src = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries',
-                          'Time', 'TimeLib.h');
-    if (fs.existsSync(src)) {
-      const dst = path.join(STAGE, 'wincompat');
-      fs.mkdirSync(dst, { recursive: true });
-      fs.copyFileSync(src, path.join(dst, 'TimeLib.h'));
-      wincompat = 1;
-    } else {
-      console.error(`stage: WARNING - TimeLib.h not found at ${src}`);
-      process.exitCode = 1;
-    }
-  }
+  copyDir(path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries', 'Time'),
+          path.join(STAGE_LIB, 'Time'));
+  const timeRepointed = defuseTimeHeader();
 
   // 6. documented source-level fixups
   const patched = applyPatches();
+
+  // 7. no fixed addresses: registers into the relocated blocks, then checked
+  const registerCounts = rewriteRegisterBlocks();
 
   console.log(
     `stage: ${path.relative(ROOT, STAGE)}\n` +
     `  core files overlaid from OnlyKey-Firmware: ${overlaid}\n` +
     `  emulator overrides applied:                ${overrides}\n` +
     `  bare-metal files dropped:                  ${dropped}\n` +
-    `  source patches applied:                    ${patched}`
+    `  Time.h consumers repointed at TimeLib.h:   ${timeRepointed}
+` +
+    `  source patches applied:                    ${patched}
+` +
+    `  registers rebased (no fixed addresses):    ` +
+    Object.entries(registerCounts).map(([n, c]) => `${n} ${c}`).join(', ')
   );
 }
 

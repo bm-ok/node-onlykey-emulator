@@ -17,10 +17,11 @@ const path = require('path');
 
 const EMU = path.resolve(__dirname, '..');
 const ROOT = path.resolve(EMU, '..');
-const OK = path.join(ROOT, 'onlykey');
+/* The components are checkouts beside this repo, not inside it - see setup.sh. */
+const CHECKOUTS = path.resolve(ROOT, '..');
 const STAGE = path.join(EMU, '.stage');
 const LIB = path.join(STAGE, 'libraries');
-const ARDUINO = path.join(OK, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
+const ARDUINO = path.join(CHECKOUTS, 'arduino-1.6.5-r5-teensy_127', 'arduino-1.6.5-r5');
 const TLIB = path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries');
 const STAGE_CORE = path.join(STAGE, 'core');
 
@@ -89,7 +90,7 @@ for (const d of LIB_DIRS) walk(path.join(LIB, d), false, sources);
 walk(path.join(LIB, 'onlykey', 'utility'), false, sources);
 
 /* 4. Arduino Time library (firmware calls now()) */
-walk(path.join(TLIB, 'Time'), false, sources);
+walk(path.join(LIB, 'Time'), false, sources);  /* staged: see stage.js defuseTimeHeader() */
 
 const rel = sources
   .map((p) => path.relative(EMU, p))
