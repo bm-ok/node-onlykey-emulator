@@ -215,7 +215,7 @@ module.exports = {
     'int uECC_shared_secret2(const uint8_t *public_key,',
   ],
   status: 'boots',
-  emulator: { linux: 'boots', win32: 'untried' },   /* node-onlykey-emulator's own ladder: linux boots = matrix stage/build/press/compat PASS, VM x64, 2026-09-27 */
+  emulator: { linux: 'boots', win32: 'boots' },   /* node-onlykey-emulator's own ladder: boots = matrix stage/build/press/compat PASS - linux (VM x64) and win32, 2026-09-27 */
   notes: [
     'IT UNLOCKS. The 2019 beta has never unlocked in this project until now:',
     '45 passed, 2 failed, 10 skipped, up from 12 passed. It boots, provisions,',
@@ -283,6 +283,24 @@ module.exports = {
    * nullSetterPointers are re-spelled above rather than imported.
    */
   patches: [
+    /*
+     * node-onlykey-emulator, Windows only. HMACSHA1() declares
+     * `extern uint8_t setBuffer[8]` against okcore.cpp's `uint8_t
+     * setBuffer[9]` - and then clears 9 bytes of it by hand, so the 8 is a
+     * typo. gcc lets the mismatched block-scope extern through; on Windows the
+     * emulator's own okcrypto.cpp patch declares setBuffer[9] at file scope
+     * (for C linkage), and clang rejects the two as conflicting. [9] matches
+     * the definition, and nothing in the function takes sizeof(setBuffer), so
+     * the firmware does exactly what it did.
+     */
+    {
+      platform: 'win32',
+      file: 'libraries/onlykey/okcrypto.cpp',
+      edits: [
+        ['\textern uint8_t setBuffer[8];',
+         '\textern uint8_t setBuffer[9];   /* was [8]; okcore.cpp defines [9] - node-onlykey-emulator stage.js */'],
+      ],
+    },
     flashWalkStride2019,
     nullSetterPointers2019,
     shared.byteprintNullArgument,

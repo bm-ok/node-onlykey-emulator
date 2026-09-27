@@ -591,6 +591,18 @@ __attribute__((weak)) uint8_t onlykeyhw = 5;   /* onlykey.h:105, OK_HW_COLOR */
 #pragma comment(linker, "/alternatename:setBuffer=?setBuffer@@3PAEA")
 #pragma comment(linker, "/alternatename:getBuffer=?getBuffer@@3PAEA")
 #pragma comment(linker, "/alternatename:keyboard_buffer=?keyboard_buffer@@3PAEA")
+
+/*
+ * The FIDO attestation data, the other way round: C++ name to C definition.
+ * fido2/crypto.h wraps its declarations in extern "C", so crypto.cpp defines
+ * these with C names; v0.2-beta.8's okcore.cpp declares them itself, outside
+ * any extern "C", and so asked for C++-mangled ones lld-link could not find.
+ * (`3PAEA` is an unsigned char array, as clang-cl mangles it; `3GA` an
+ * unsigned short - uint16_t.)
+ */
+#pragma comment(linker, "/alternatename:?attestation_key@@3PAEA=attestation_key")
+#pragma comment(linker, "/alternatename:?attestation_cert_der@@3PAEA=attestation_cert_der")
+#pragma comment(linker, "/alternatename:?attestation_cert_der_size@@3GA=attestation_cert_der_size")
 #endif
 
 /*
