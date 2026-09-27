@@ -1296,6 +1296,20 @@ function main() {
   // 7. no fixed addresses: registers into the relocated blocks, then checked
   const registerCounts = rewriteRegisterBlocks();
 
+  /*
+   * 8. Say what was staged. The addon built from this tree does not know which
+   * release it is, and a test that checks a release against its row in
+   * ok-versions.json (test/compat.js) has to - reading OKEMU_VERSION from its
+   * own environment would trust the caller rather than the build.
+   */
+  fs.writeFileSync(path.join(STAGE, 'build.json'), JSON.stringify({
+    version: release.version,
+    pins: release.pins ? { libraries: release.pins.libraries,
+      'OnlyKey-Firmware': release.pins['OnlyKey-Firmware'] } : null,
+    debug: debugOn,
+    platform: versions.EMULATOR_PLATFORM,
+  }, null, 2) + '\n');
+
   console.log(
     `stage: ${path.relative(ROOT, STAGE)}\n` +
     `  core files overlaid from OnlyKey-Firmware: ${overlaid}\n` +
