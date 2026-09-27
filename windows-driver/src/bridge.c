@@ -405,51 +405,6 @@ OkvhidPipeAccept(_In_ HANDLE Pipe, _In_ HANDLE Event, _In_ HANDLE StopEvent)
 }
 
 /*
- * The pipe's security descriptor: SYSTEM + the key's owner, or SYSTEM only.
- *
- * The owner is the SID install-driver.ps1 recorded under
- * HKLM\SOFTWARE\okvhid\PipeUser (see OKVHID_PIPE_SDDL_FMT in public.h for
- * why). Read on every pipe start, like the trace switch, so a change takes a
- * replug. Anything wrong with the value - missing, not a string, not a SID -
- * fails CLOSED to SYSTEM only: the emulator cannot attach, and the trace says
- * why, rather than the pipe quietly opening to everyone.
- */
-static VOID
-OkvhidPipeSddl(_In_ PDEVICE_CONTEXT Ctx, _Out_writes_(Count) WCHAR *Sddl, _In_ size_t Count)
-{
-    HKEY  key;
-    WCHAR sid[192];
-    DWORD size = sizeof(sid) - sizeof(WCHAR);
-    DWORD type = 0;
-    PSID  parsed = NULL;
-    BOOL  ok = FALSE;
-
-    RtlZeroMemory(sid, sizeof(sid));
-
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, OKVHID_PIPE_USER_KEY, 0,
-                      KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
-        ok = RegQueryValueExW(key, OKVHID_PIPE_USER_VALUE, NULL, &type,
-                              (LPBYTE)sid, &size) == ERROR_SUCCESS &&
-             type == REG_SZ;
-        RegCloseKey(key);
-    }
-
-    /* A real SID or nothing: this string goes straight into an SDDL, and a
-     * value that is not a SID must not be able to add ACEs of its own. */
-    if (ok && ConvertStringSidToSidW(sid, &parsed)) {
-        LocalFree(parsed);
-        if (SUCCEEDED(StringCchPrintfW(Sddl, Count, OKVHID_PIPE_SDDL_FMT, sid))) {
-            OkvhidTrace(Ctx, "pipe access: SYSTEM + %ls", sid);
-            return;
-        }
-    }
-
-    (void)StringCchCopyW(Sddl, Count, OKVHID_PIPE_SDDL_CLOSED);
-    OkvhidTrace(Ctx, "pipe access: no valid PipeUser - SYSTEM only "
-                     "(run install-driver.ps1)");
-}
-
-/*
  * One thread per device. Creates the pipe, waits for the emulator, reads
  * frames until it goes away, then does it again.
  *
@@ -468,7 +423,6 @@ OkvhidPipeThread(LPVOID Param)
 {
     PDEVICE_CONTEXT ctx = (PDEVICE_CONTEXT)Param;
     WCHAR name[64];
-    WCHAR sddl[256];
     SECURITY_ATTRIBUTES sa;
     PSECURITY_DESCRIPTOR sd = NULL;
     HANDLE ioEvent;
@@ -476,10 +430,8 @@ OkvhidPipeThread(LPVOID Param)
     (void)StringCchPrintfW(name, ARRAYSIZE(name), L"%s%u",
                            OKVHID_PIPE_PREFIX, ctx->Iface->InterfaceNumber);
 
-    OkvhidPipeSddl(ctx, sddl, ARRAYSIZE(sddl));
-
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl, SDDL_REVISION_1, &sd, NULL)) {
+            OKVHID_PIPE_SDDL, SDDL_REVISION_1, &sd, NULL)) {
         /* Without a descriptor the pipe would inherit the service account's
          * default, which the emulator cannot open. Better to run with no pipe
          * than one nobody can reach - the HID side still works, silently. */

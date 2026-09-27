@@ -18,22 +18,13 @@
     Install even if the package is unsigned. The install will very likely
     fail; this exists so the failure can be read.
 
-.PARAMETER PipeUser
-    The account allowed to open the key's pipes (besides SYSTEM), as
-    DOMAIN\user or user. Defaults to the user signed in to the desktop -
-    not the elevating account, so "run as a different admin" still names the
-    key's owner. Recorded as a SID under HKLM\SOFTWARE\okvhid\PipeUser; see
-    OKVHID_PIPE_SDDL_FMT in src\public.h.
-
 .EXAMPLE
     .\install-driver.ps1
-    .\install-driver.ps1 -PipeUser MYPC\alice
 #>
 [CmdletBinding()]
 param(
     [string] $PackageDir,
-    [switch] $Force,
-    [string] $PipeUser
+    [switch] $Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,30 +72,6 @@ if (-not (Test-Path $cat)) {
     if (-not $Force) { throw 'Refusing to install an unsigned package. Pass -Force to try anyway.' }
 }
 
-# ------------------------------------------------------------ pipe owner
-#
-# Who may open the key's pipes, besides SYSTEM. Recorded BEFORE the package is
-# added: devices that already exist restart on the new package and read this
-# as their pipes start. Without it the driver fails closed (SYSTEM only) and
-# the emulator cannot attach - so an account that cannot be resolved stops
-# the install here instead of producing a key nobody can reach.
-Say 'Recording who may open the pipes'
-if (-not $PipeUser) {
-    $PipeUser = (Get-CimInstance Win32_ComputerSystem).UserName   # the desktop session
-}
-if (-not $PipeUser) {
-    throw 'No one is signed in to the desktop session to own the key. Pass -PipeUser DOMAIN\user.'
-}
-try {
-    $sid = (New-Object System.Security.Principal.NTAccount($PipeUser)).Translate(
-               [System.Security.Principal.SecurityIdentifier]).Value
-} catch {
-    throw "Cannot resolve '$PipeUser' to an account: $($_.Exception.Message)"
-}
-New-Item -Path 'HKLM:\SOFTWARE\okvhid' -Force | Out-Null
-Set-ItemProperty -Path 'HKLM:\SOFTWARE\okvhid' -Name 'PipeUser' -Value $sid -Type String
-Write-Host "    $PipeUser ($sid) + SYSTEM"
-
 # ------------------------------------------------------------ driver store
 Say 'Adding okvhid.inf to the driver store'
 
@@ -115,15 +82,9 @@ $declaredVer = (Select-String -Path $inf -Pattern '^\s*DriverVer\s*=' |
 Write-Host "    DriverVer: $declaredVer"
 
 $addOutput = & pnputil /add-driver $inf /install 2>&1 | Out-String
-$addExit = $LASTEXITCODE
 Write-Host $addOutput
-# 3010 is ERROR_SUCCESS_REBOOT_REQUIRED: the package IS added, but a device
-# could not switch drivers yet - typically because an application (the
-# OnlyKey App) holds it open. Treating it as a failure stopped the install
-# before the devices and the table; carry on, and say it at the end.
-$rebootNeeded = ($addExit -eq 3010)
-if ($addExit -ne 0 -and $addExit -ne 259 -and -not $rebootNeeded) {
-    throw "pnputil /add-driver failed with exit code $addExit"
+if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 259) {
+    throw "pnputil /add-driver failed with exit code $LASTEXITCODE"
 }
 
 # pnputil decides whether a package is new on DriverVer alone. build-direct.ps1
@@ -288,15 +249,6 @@ if ($stale) {
     Warn 'outlived its device. It belongs to the host process, which Windows'
     Warn 'restarts on its own for the devices that are still present:'
     Warn '    Get-Process WUDFHost | Stop-Process -Force'
-}
-
-if ($rebootNeeded) {
-    Write-Host ''
-    Bad 'Windows needs a RESTART to finish: pnputil exit 3010 - a device could not'
-    Bad 'switch to the new driver while something held it open (close the OnlyKey'
-    Bad 'App before installing). Until then the table above may show the OLD'
-    Bad 'driver still serving the pipes. After the restart, run this again - the'
-    Bad 'devices do not survive a reboot anyway.'
 }
 
 Write-Host ''
