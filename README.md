@@ -386,11 +386,31 @@ npm install
 npm run rebuild
 ```
 
-Then `node bin/daemon.js` exactly as on Linux — it picks the `okvhid` bridge
-automatically on Windows and prints `okvhid bridge active`. `OKEMU_BRIDGE` is
-not consulted there; `uhid` and `gadget` are kernel features Windows does not
+Then run it **under pm2, exactly as on Linux** — not `node bin/daemon.js` on
+its own. The daemon exits on every firmware restart, factory reset and rebuild
+and relies on pm2 to bring it back; run bare, the first *Restart device* leaves
+it down.
+
+```powershell
+npm install -g pm2                 # once
+cd <this repo>
+pm2 start ecosystem.config.js      # the emulator - prints "okvhid bridge active"
+cd ui
+npm install                        # once - the NW.js SDK
+npm start                          # the GUI
+```
+
+It picks the `okvhid` bridge automatically on Windows. `OKEMU_BRIDGE` is not
+consulted there; `uhid` and `gadget` are kernel features Windows does not
 have, so offering the choice could only produce a failure whose advice points
 somewhere useless.
+
+Elevation is needed only for the driver (`sign.ps1`, `install-driver.ps1`,
+`hotplug.ps1`) and for the GUI's **Unplug / Plug in**, which raise a UAC
+prompt — see [The GUI](#the-gui). After a Windows restart run
+`install-driver.ps1` again (the devices do not survive a reboot), and if the
+key was **unplugged** when Windows went down, `hotplug.ps1` too: an unplug can
+leave devices *disabled* ("problem 22"), which persists across the restart.
 
 Requires Visual Studio's *C++ Clang tools for Windows* component — the
 firmware uses GCC `__attribute__` syntax in ~170 places, so MSVC cannot
@@ -423,7 +443,10 @@ socket file left by a killed process makes the next bind fail with
 EADDRINUSE). With the long-lived process listening, a device reboot is just a
 client disconnect and reconnect, and the GUI keeps its window, log and state.
 
-Socket: `$XDG_RUNTIME_DIR/onlykey-emulator.sock`, mode `0600`.
+Socket: `$XDG_RUNTIME_DIR/onlykey-emulator.sock`, mode `0600`. On Windows,
+which has no Unix socket files, a named pipe:
+`\\.\pipe\onlykey-emulator-<user>` — the user name in it because pipes share
+one machine-wide namespace.
 
 Running headless is fine — with nothing listening the emulator retries quietly
 and carries on. The HID interfaces do not depend on this channel, so the test
@@ -535,6 +558,23 @@ documented recovery did nothing.
 Stopping goes through `pm2 stop` rather than `process.exit()` — pm2's job here
 is respawning the daemon after `CPU_RESTART()`, so a plain exit would come
 straight back up. *Restart device* remains the reboot-without-unplugging path.
+
+**On Windows**, there is no UDC; the bus is the okvhid driver's four devices.
+Unplug first **pulls the cable**: the emulator sends each device an unplug
+frame and the driver fails its own device — a *surprise* removal, the same
+thing a real cable pull causes, which no application can veto. (The orderly
+removal alone was vetoed by the OnlyKey App holding the vendor collection; the
+device then never went, and after Plug in the App never saw the key again.)
+Then `pm2 stop`, then `windows-driver\hotplug.ps1 -Off` clears the dead device
+nodes. Plug in runs `hotplug.ps1` to recreate them and, once it has finished,
+`pm2 start`. Both scripts need an administrator, so each click raises a **UAC
+prompt**; declining it leaves things as they were (or, on Unplug, stopped with
+the devices still there — the GUI says which).
+
+**Rebuild & restart** is *stop, build, start* through pm2 on every platform:
+on Windows a loaded addon is a locked DLL, so a process cannot rebuild the
+module it is running. **Factory reset** wipes flash and EEPROM in place and
+reboots onto them.
 
 ---
 
@@ -725,7 +765,9 @@ emulator/
     hid-descriptors.js the four HID interfaces - one source of truth
     gadget-bridge.js   USB gadget transport (default)
     uhid-bridge.js     UHID transport (OKEMU_BRIDGE=uhid)
-    power.js           unplug = unbind UDC + pm2 stop
+    okvhid-bridge.js   Windows transport - the okvhid driver's named pipes
+    power.js           unplug / plug in / rebuild, through pm2 (+ UDC on
+                       Linux, elevated hotplug.ps1 on Windows)
     ipc-host.js        the GUI listens
     ipc-peer.js        the emulator dials in
   src/                 HAL, flash, restart trap, N-API surface
@@ -738,6 +780,8 @@ scripts/
   build-dummy-hcd.sh   compile dummy_hcd out of tree (no root)
   gadget-setup.sh      create/bind the USB gadget (root, one-time)
   setup-permissions.sh udev rules, sysctl, and the above (root, one-time)
+windows-driver/        okvhid, the Windows HID driver - build, sign, install,
+                       hotplug; see windows-driver/README.md
 ```
 
 The native addon knows nothing about Linux: it exposes HID as events and a
