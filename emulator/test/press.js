@@ -91,13 +91,26 @@ function checkModes() {
    * PIN entry"), open the confirmation, close it. Only the last reply says
    * whether the two entries matched.
    */
+  /*
+   * Each OKSETPIN is answered by exactly one reply, so each step waits for ITS
+   * reply - with a deadline - rather than sleeping a fixed time. A fixed 1.5 s
+   * failed once in the version matrix, straight after a build, when the host
+   * was busy and "Successfully set PIN" arrived late.
+   */
+  const reply = async (n, step) => {
+    for (let t = 0; t < 200 && replies.length < n; t++) await sleep(50);
+    if (replies.length < n) {
+      throw new Error(`${step}: no reply ${n} within 10 s; saw ${JSON.stringify(replies)}`);
+    }
+  };
+  let expected = 0;
   for (const step of ['enter', 'confirm']) {
     vendor(OKSETPIN);
-    await sleep(800);
+    await reply(++expected, `${step} (open)`);
     emu.pressButtons(PIN);
     await drain(step);
     vendor(OKSETPIN);
-    await sleep(1500);
+    await reply(++expected, `${step} (close)`);
   }
 
   console.log('replies:', JSON.stringify(replies));

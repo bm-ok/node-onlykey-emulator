@@ -238,6 +238,39 @@ for entry in "${absent[@]}"; do
   if [ "$dir" = "python-onlykey" ]; then
     git -C "$CHECKOUTS/$dir" submodule update --init onlykey-solo-python
   fi
+
+  # The version matrix (emulator/scripts/matrix.js) builds signed releases from
+  # the commits ok-versions.json pins, and every pin is an UPSTREAM release tag.
+  # The bm-ok forks mirror master only, and some releases were cut from other
+  # branches - v2.1.2's libraries commit is on remove-touchsense - so a fresh
+  # fork clone cannot stage them. Fetch trustcrypto's tags into what we just
+  # cloned (read-only: it adds refs, nothing is pushed or checked out).
+  case "$dir" in
+    libraries|OnlyKey-Firmware)
+      git -C "$CHECKOUTS/$dir" remote add trustcrypto "https://github.com/trustcrypto/$dir" 2>/dev/null || true
+      git -C "$CHECKOUTS/$dir" fetch -q --tags trustcrypto || \
+        echo "   warning: could not fetch trustcrypto tags into $dir - older releases may not stage" >&2
+      ;;
+  esac
+done
+
+# A checkout that was already there is used as it is (see above), so it is only
+# CHECKED for the pinned release commits, and told how to get any it lacks.
+for repo in libraries OnlyKey-Firmware; do
+  [ -d "$CHECKOUTS/$repo/.git" ] || continue
+  missing=$(node -e '
+    const pins = require(process.argv[1]);
+    const want = new Set(Object.values(pins).map((r) => r[process.argv[2]]).filter(Boolean));
+    console.log([...want].join(" "));' "$ROOT/ok-versions.json" "$repo" 2>/dev/null |
+    tr " " "\n" | while read -r sha; do
+      [ -n "$sha" ] && ! git -C "$CHECKOUTS/$repo" cat-file -e "$sha^{commit}" 2>/dev/null && echo "$sha"
+    done | tr "\n" " ")
+  if [ -n "$missing" ]; then
+    echo "== $repo lacks pinned release commit(s): $missing" >&2
+    echo "   the version matrix cannot stage those releases until it has them:" >&2
+    echo "     git -C \"$CHECKOUTS/$repo\" remote add trustcrypto https://github.com/trustcrypto/$repo" >&2
+    echo "     git -C \"$CHECKOUTS/$repo\" fetch --tags trustcrypto" >&2
+  fi
 done
 
 # --- Python venv ------------------------------------------------------------
