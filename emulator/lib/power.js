@@ -21,13 +21,20 @@
  * to respawn the daemon after CPU_RESTART(), so a plain exit would come
  * straight back up. `pm2 stop` marks it stopped and it stays down.
  *
- * ON WINDOWS there is no UDC. The bus half is the okvhid driver's root
- * devices, and removing those needs an elevated token (windows-driver/
- * hotplug.ps1) that this GUI does not run with. So unplug there is the POWER
- * half only: the emulator stops, its pipe clients close, and the four devices
- * stay enumerated but silent until "Plug in" - a key with no power, still in
- * the port. What clients see is a device that stops answering, not one that
- * disappears; a real removal is hotplug.ps1 -Off, elevated.
+ * ON WINDOWS there is no UDC. The bus half is the okvhid driver's four root
+ * devices, and only an administrator can remove or re-add a device. So both
+ * halves go through windows-driver/hotplug.ps1, run ELEVATED - Windows shows
+ * a UAC prompt for each Unplug and each Plug in. That is the price of a real
+ * removal: the HID collections disappear from every application, which gets
+ * the same "device removed" notice a pulled cable sends. Without it, the
+ * devices stayed enumerated and merely went silent, so clients hung on a key
+ * that was "there" instead of seeing no key at all.
+ *
+ * Order: Unplug stops the emulator (pm2 stop) and then removes the devices;
+ * Plug in recreates the devices, waits for hotplug.ps1 to finish, then starts
+ * the emulator. Declining the prompt on Plug in leaves it unplugged; on
+ * Unplug the emulator is already stopped, and the error says the devices
+ * stayed.
  */
 'use strict';
 
@@ -78,9 +85,54 @@ function pm2(action) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/*
+ * Windows: run windows-driver/hotplug.ps1 elevated and wait for it.
+ *
+ * Start-Process -Verb RunAs is what raises the UAC prompt; declining it throws
+ * inside this outer PowerShell, which exits non-zero, so the caller never goes
+ * on to stop or start anything. The path travels in an environment variable
+ * rather than the command line, so no quoting of it can go wrong.
+ */
+const HOTPLUG = path.resolve(__dirname, '..', '..', 'windows-driver', 'hotplug.ps1');
+
+function hotplugElevated(off) {
+  const script =
+    "$a = @('-NoProfile','-ExecutionPolicy','Bypass','-File',('\"' + $env:OKVHID_HOTPLUG + '\"'))" +
+    (off ? " + @('-Off')" : '') + '; ' +
+    '$p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList $a; ' +
+    'exit $p.ExitCode';
+  return new Promise((resolve, reject) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      timeout: 120000,                 /* time for a person to answer UAC */
+      windowsHide: true,
+      env: { ...process.env, OKVHID_HOTPLUG: HOTPLUG },
+    }, (err, stdout, stderr) => {
+      if (!err) return resolve();
+      const why = /cancel/i.test(`${stderr}${err.message}`)
+        ? 'UAC prompt declined - nothing changed'
+        : `hotplug.ps1${off ? ' -Off' : ''} failed: ${(stderr || err.message).trim().split(/\r?\n/).pop()}`;
+      reject(new Error(why));
+    });
+  });
+}
+
 /** Cut power: detach from the bus, then stop the firmware process. */
 async function powerOff() {
-  if (WIN) { await pm2('stop'); return null; }   /* power half only - see top */
+  if (WIN) {
+    /*
+     * Power first, then the devices: the firmware stops before its interfaces
+     * disappear, so it is never running against a bus that has gone. If the
+     * UAC prompt is declined the emulator is already stopped, so say exactly
+     * that rather than "nothing changed".
+     */
+    await pm2('stop');
+    try {
+      await hotplugElevated(true);   /* the devices vanish - see top */
+    } catch (err) {
+      throw new Error(`emulator stopped, but the devices were NOT removed: ${err.message}`);
+    }
+    return null;
+  }
   const name = udcName();          /* remember it before unbinding */
   if (isBound()) fs.writeFileSync(UDC_FILE, '\n');
   await pm2('stop');
@@ -93,9 +145,18 @@ async function powerOff() {
  * that answers nothing.
  */
 async function powerOn() {
+  if (WIN) {
+    /*
+     * Devices first, and only once hotplug.ps1 has FINISHED, then power - so
+     * the emulator starts with its four pipes already listening. (The bridge
+     * would retry them anyway, but it has nothing to find until then.) A
+     * declined prompt throws here, before pm2 start, leaving it unplugged.
+     */
+    await hotplugElevated(false);
+    await pm2('start');
+    return null;
+  }
   await pm2('start');
-  /* Windows: the daemon reattaches to the okvhid pipes itself; no bus step. */
-  if (WIN) return null;
   await sleep(1500);
   const name = udcName();
   if (!name) throw new Error('no UDC available - run scripts/gadget-setup.sh');
