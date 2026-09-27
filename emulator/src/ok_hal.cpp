@@ -553,6 +553,33 @@ void okemu_delay_ms(uint32_t ms) {
  */
 __attribute__((weak)) uint8_t onlykeyhw = 5;   /* onlykey.h:105, OK_HW_COLOR */
 
+#ifdef _WIN32
+/*
+ * A uint8_t VIEW OF AN int GLOBAL, the way every released firmware reads two of
+ * them - kept on Windows without changing a declaration.
+ *
+ * The releases define `int Profile_Offset` and `int outputmode` (okcore.cpp)
+ * but declare them `extern uint8_t` in password.cpp, okcrypto.cpp and the
+ * sketch. On ARM and Linux a global's symbol is just its name, so those
+ * declarations link to the int and read its low byte - which is what the
+ * device behaves on: OnlyKey.ino stores -42 in Profile_Offset and the uint8_t
+ * readers see 214. ok-rn keeps that deliberately (scripts/versions/_shared.js,
+ * profileOffsetType): "correcting" the type to int would be a behaviour change
+ * wearing a type fix, on firmware that is meant to run as it shipped.
+ *
+ * MSVC-style mangling puts the TYPE in the symbol - `?Profile_Offset@@3HA` for
+ * the int, `?Profile_Offset@@3EA` for an unsigned char - so on Windows those
+ * declarations name a symbol nobody defines, and lld-link failed every pinned
+ * release with exactly two undefined symbols. /alternatename resolves each
+ * uint8_t name to the int's address: the same low-byte read as everywhere
+ * else, the declarations untouched. It is a FALLBACK, used only when the
+ * uint8_t symbol is otherwise undefined, so a tree that declares them int (the
+ * working tree) is unaffected.
+ */
+#pragma comment(linker, "/alternatename:?Profile_Offset@@3EA=?Profile_Offset@@3HA")
+#pragma comment(linker, "/alternatename:?outputmode@@3EA=?outputmode@@3HA")
+#endif
+
 /*
  * A DUO HAS TWO PADS, AND ITS THIRD BUTTON IS BOTH AT ONCE.
  *
