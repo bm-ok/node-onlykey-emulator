@@ -176,7 +176,11 @@ if [[ -f $KO ]]; then
   # which is usually a per-user nvm install and so absent from root's PATH.
   # node is typically an nvm install, so absent from root's PATH - resolve it
   # here, while still unprivileged, and hand the path across.
-  GADGET_NODE="$(command -v node 2>/dev/null || true)"
+  #
+  # A NODE_BIN we were given wins: setup.sh runs this whole script under sudo,
+  # so by now we ARE root and `command -v node` finds nothing for an nvm user.
+  # It passes the path it resolved as the user; honour that first.
+  GADGET_NODE="${NODE_BIN:-$(command -v node 2>/dev/null || true)}"
   $SUDO env NODE_BIN="$GADGET_NODE" SUDO_USER="$TARGET_USER" \
     "$SCRIPT_DIR/gadget-setup.sh" \
     || echo "    gadget setup failed - the UHID transport is still available"

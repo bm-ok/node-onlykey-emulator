@@ -384,7 +384,12 @@ elif [ "$(id -u)" -eq 0 ]; then
   "$ROOT/scripts/setup-permissions.sh"
 elif command -v sudo >/dev/null 2>&1; then
   echo "== device access needs root once - running scripts/setup-permissions.sh"
-  sudo "$ROOT/scripts/setup-permissions.sh" \
+  # Hand node's path across NOW, while this still runs as the user: node is
+  # usually an nvm install, which root's PATH and even the user's non-
+  # interactive login shell do not have - so under sudo nothing could find it,
+  # and the gadget step failed "node not found" on a fresh Ubuntu 24.04 with
+  # nvm (2026-09-27).
+  sudo env NODE_BIN="$(command -v node 2>/dev/null || true)" "$ROOT/scripts/setup-permissions.sh" \
     || echo "!! setup-permissions.sh failed - re-run it yourself, or pass --no-privileged" >&2
 else
   echo "!! no sudo, and device access is not set up. Run as root:" >&2
