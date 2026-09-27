@@ -223,7 +223,7 @@ async function main() {
     /* npm is npm.cmd on Windows, which only runs through a shell - and there
      * as one command string, since an args array with shell:true is
      * deprecated (DEP0190). Linux is spawned directly, as before. */
-    const opts = { cwd: path.join(__dirname, '..'), stdio: 'inherit' };
+    const opts = { cwd: path.join(__dirname, '..'), stdio: 'inherit', windowsHide: true };
     const r = process.platform === 'win32'
       ? spawnSync('npm run build', { ...opts, shell: true })
       : spawnSync('npm', ['run', 'build'], opts);
@@ -231,7 +231,10 @@ async function main() {
       /* Don't exit on a failed build: that would have pm2 respawn us onto the
        * old binary in a loop while the developer is still fixing the error. */
       log('build FAILED - staying up on the previously built module');
-      ipc.broadcast({ t: 'error', message: 'rebuild failed, see daemon output' });
+      /* publishError, not broadcast: IpcPeer has no broadcast(), and calling it
+       * threw "ipc.broadcast is not a function" instead of reporting the
+       * failure - on every platform, whenever a rebuild failed. */
+      ipc.publishError('rebuild failed, see daemon output');
       return;
     }
     shutdown(EXIT_RESTART, 'rebuild succeeded');

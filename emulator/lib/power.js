@@ -32,6 +32,7 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 const { exec, execFile } = require('child_process');
 
 const GADGET_DIR = process.env.OKEMU_GADGET_DIR
@@ -70,7 +71,7 @@ function pm2(action) {
       if (err) reject(new Error(`pm2 ${action} ${PM2_APP}: ${stderr || err.message}`));
       else resolve(stdout);
     };
-    if (WIN) exec(`${PM2_BIN} ${action} ${PM2_APP}`, { timeout: 20000 }, done);
+    if (WIN) exec(`${PM2_BIN} ${action} ${PM2_APP}`, { timeout: 20000, windowsHide: true }, done);
     else execFile(PM2_BIN, [action, PM2_APP], { timeout: 20000 }, done);
   });
 }
@@ -102,4 +103,35 @@ async function powerOn() {
   return name;
 }
 
-module.exports = { powerOff, powerOn, isBound, udcName, UDC_FILE, GADGET_DIR };
+/**
+ * Rebuild the addon and come back up on it: stop, build, start.
+ *
+ * The daemon used to build ITSELF while running, then exit into the new
+ * module. On Windows that cannot work - a loaded addon is a locked DLL, and
+ * the link step failed "lld-link: failed to write output
+ * onlykey_emulator.node" because the process asking for the build held the
+ * file. Stopping first releases it, on every platform, so the sequence is the
+ * same everywhere and has no per-OS trick in it.
+ *
+ * The emulator is started again whatever the build did: a failed link leaves
+ * the previous module in place, so a failure costs a restart and nothing else.
+ * Resolves { ok, output } - output is the tail of the build log to show.
+ */
+async function rebuild() {
+  await pm2('stop');
+  const build = await new Promise((resolve) => {
+    exec('npm run build', {
+      windowsHide: true,   /* no console window flashing up on Windows */
+      cwd: path.join(__dirname, '..'),
+      timeout: 15 * 60 * 1000,
+      maxBuffer: 64 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      const output = `${stdout || ''}${stderr || ''}`.split(/\r?\n/).slice(-25).join('\n');
+      resolve({ ok: !err, output });
+    });
+  });
+  await pm2('start');
+  return build;
+}
+
+module.exports = { powerOff, powerOn, rebuild, isBound, udcName, UDC_FILE, GADGET_DIR };

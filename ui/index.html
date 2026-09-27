@@ -826,9 +826,26 @@ $('btn-clear').addEventListener('click', () => {
   pendingRows = [];
 });
 $('btn-restart').addEventListener('click', () => client.restartDevice());
-$('btn-rebuild').addEventListener('click', () => {
-  sys('rebuilding — the daemon stays up if the build fails');
-  client.rebuild();
+/*
+ * Stop, build, start - through lib/power.js, like Unplug. The daemon can no
+ * longer rebuild itself in place: on Windows its own loaded addon is a locked
+ * file the linker cannot overwrite. Stopping first frees it everywhere. The
+ * emulator comes back either way; a failed build leaves the old module.
+ */
+$('btn-rebuild').addEventListener('click', async () => {
+  const btn = $('btn-rebuild');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  sys('rebuilding — emulator stopped for the build');
+  try {
+    const r = await getPower().rebuild();
+    if (r.ok) sys('rebuild succeeded — emulator started on the new build');
+    else sys('rebuild FAILED — emulator started on the previous build\n' + r.output);
+  } catch (err) {
+    sys('rebuild failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
 });
 $('btn-reset').addEventListener('click', () => {
   if (confirm('Erase the emulated flash and EEPROM?\n\nThis wipes device keys, PINs and all slot data.')) {

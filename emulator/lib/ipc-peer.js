@@ -182,6 +182,11 @@ class IpcPeer extends EventEmitter {
     this._send({ t: 'plugged', plugged });
   }
 
+  /** Report a failure the host should show - the GUI prints it as "error: ...". */
+  publishError(message) {
+    this._send({ t: 'error', message });
+  }
+
   /*
    * Hold what the device says before anyone is listening, instead of dropping
    * it.
