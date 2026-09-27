@@ -183,11 +183,11 @@ COMPONENTS=(
   "python-onlykey              https://github.com/bm-ok/0c-coder-python-onlykey"
   "onlykey-testing             https://github.com/bm-ok/onlykey-testing"
   "OnlyKey-App                 https://github.com/bm-ok/OnlyKey-App"
-  # The emulator's press modes come from the lib's press table (tap / press /
-  # hold -> firmware ticks), one table for every GUI. emulator/package.json
-  # takes it as file:../../node-onlykey-lib, so it must be cloned before the
-  # emulator's npm install below.
-  "node-onlykey-lib            https://github.com/bmatusiak/node-onlykey-lib"
+  # node-onlykey-lib is NOT cloned here: emulator/package.json pins it by
+  # commit hash (github:bmatusiak/node-onlykey-lib#<hash>), so npm installs
+  # exactly that commit. A sibling checkout would be whatever it happened to
+  # hold - the version matrix caught a host whose older checkout read the same
+  # firmware's capabilities differently.
 )
 
 absent=()
