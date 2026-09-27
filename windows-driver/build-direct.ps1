@@ -113,6 +113,27 @@ Write-Host "    lld-link: $($linker.Source)"
 
 # The MSVC CRT and the system SDK still supply the C runtime and the ordinary
 # import libraries; only the WDF and km pieces come from the NuGet WDK.
+#
+# Loaded HERE when the shell has not, so the build is one command from a plain
+# PowerShell: vswhere names the newest Visual Studio with the C++ tools, and its
+# vcvars64.bat's environment is copied into this process. A Developer
+# PowerShell already has it and skips this. Only when no Visual Studio can be
+# found does it stop, with the manual steps.
+if (-not $env:INCLUDE -or -not $env:LIB) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    $vsroot = if (Test-Path $vswhere) {
+        & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath | Select-Object -First 1
+    }
+    $vcvars = if ($vsroot) { Join-Path $vsroot 'VC\Auxiliary\Build\vcvars64.bat' }
+    if ($vcvars -and (Test-Path $vcvars)) {
+        Write-Host "    MSVC environment: $vcvars"
+        foreach ($l in (cmd /c "`"$vcvars`" >nul 2>&1 && set")) {
+            if ($l -match '^([^=]+)=(.*)$') { Set-Item "env:$($Matches[1])" $Matches[2] }
+        }
+    }
+}
 if (-not $env:INCLUDE -or -not $env:LIB) {
     throw @'
 The MSVC environment is not loaded. Open a Developer PowerShell, or:

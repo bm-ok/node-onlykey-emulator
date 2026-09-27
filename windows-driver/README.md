@@ -31,7 +31,10 @@ nothing outside this directory is needed to build, sign or install it.
 
 `fetch-wdk.ps1` unpacks into `windows-driver\vendor\wdk\`, which is gitignored.
 No Visual Studio workload and no WDK installer is required; the NuGet packages
-carry everything, and clang-cl ships with Visual Studio's C++ tools.
+carry everything, and clang-cl ships with Visual Studio's C++ tools. Run it
+from any PowerShell: when the MSVC environment is not already loaded,
+`build-direct.ps1` finds Visual Studio with `vswhere` and loads `vcvars64.bat`
+itself.
 
 `build-direct.ps1` regenerates `src\descriptors.h` from
 `..\emulator\lib\hid-descriptors.js` on every run, so the descriptors Windows
