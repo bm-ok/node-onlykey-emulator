@@ -91,6 +91,12 @@ Re-running `install-driver.ps1` is cheap once the package is signed and in the
 store: it re-adds a package Windows already has and recreates the four
 devices. No rebuild, no re-sign.
 
+**If the key was unplugged when Windows went down, run `.\hotplug.ps1` too.**
+`hotplug.ps1 -Off` disables a device where it can, and a disable is a saved
+setting, not a state: it survives the restart. `install-driver.ps1` then shows
+those devices as `Error (problem 22)` - problem 22 is "disabled" - with no
+pipe. `hotplug.ps1` (plug in) enables them.
+
 ## Unplug and replug
 
 ```
@@ -99,10 +105,38 @@ devices. No rebuild, no re-sign.
 .\hotplug.ps1 -Interface fido -Cycle  yank CTAP-HID mid-ceremony
 ```
 
-A pipe exists exactly as long as its device does, so this is a real removal
-rather than a simulated one: the stack is torn down, the pipe closes, and every
-application holding the collection sees it disappear. It is what `power.js`
-does on Linux by unbinding the UDC.
+A pipe exists exactly as long as its device is present - started in
+`EvtDevicePrepareHardware`, stopped in `EvtDeviceReleaseHardware` - so this is
+a real removal rather than a simulated one: the stack is torn down, the pipe
+closes, and every application holding the collection sees it disappear. It is
+what `power.js` does on Linux by unbinding the UDC.
+
+(It used to be stopped only at object cleanup, which waits for every handle to
+close. An app holding the collection then kept the pipe served after the
+device had gone, and the next device for that interface could not take its
+own name.)
+
+### An app can veto `hotplug.ps1`. A pulled cable cannot be vetoed.
+
+`hotplug.ps1` removes devices the orderly way, and an orderly removal asks
+first: any application holding a collection open may refuse. **The OnlyKey App
+does**, for the vendor collection - Kernel-PnP logs it as event 225, "stopped
+the removal". The device then never goes, its pipe stays served, and on
+"plug in" no new device arrives, so the App sees the key leave and never come
+back (measured 2026-09-26).
+
+A real USB cable pull is a *surprise* removal, and nothing can veto that. So
+the emulator GUI's **Unplug** pulls the cable first: the emulator sends every
+device an `OKVHID_FRAME_UNPLUG` (see `src\public.h`), and the driver fails its
+own device with `WdfDeviceSetFailed(..., WdfDeviceFailedNoRestart)` - a
+surprise removal. Only then does it stop the emulator and run
+`hotplug.ps1 -Off`, which now just clears the dead device nodes. Plug in runs
+`hotplug.ps1` and, when it has finished, starts the emulator.
+
+Measured with the OnlyKey App open: all four devices removed, vendor included,
+no veto event, all four back on plug in and the App shows the key again.
+`hotplug.ps1 -Off` run **by itself** is still the orderly, vetoable kind - use
+the GUI, or close the apps holding the key first.
 
 ---
 
@@ -157,7 +191,10 @@ carry a default ACL the driver is not in.
 `src\public.h` is the contract. One pipe per interface, `\\.\pipe\okvhid-0..3`,
 numbered by USB interface; a 12-byte header of magic, kind and length; and a
 HELLO frame on connect so the client learns which interface it reached without
-hard-coding anything.
+hard-coding anything. Frames: HELLO (driver to emulator, once), INPUT
+(emulator to driver, a report), OUTPUT and FEATURE (driver to emulator), and
+UNPLUG (emulator to driver, no payload: remove this device - see
+[Unplug and replug](#unplug-and-replug)).
 
 **The pipe ACL is the security boundary of this design, and it is a wide one.**
 `D:(A;;GA;;;AU)` — anything running as an authenticated user can feed reports
@@ -180,6 +217,20 @@ capped at 32 MB. The switch is read once per device when its pipe starts, so
 toggling it means replugging (`.\hotplug.ps1 -Cycle`). Every IOCTL, every frame
 read off the pipe, and every report handed to HIDCLASS is logged, which gives
 a complete trace of a ceremony from the browser down to the wire.
+
+The pipe's lifecycle is logged too, and that is where an unplug is read.
+Lines are tagged by interface, `[0]` keyboard to `[3]` SEREMU:
+
+```
+[2] unplug frame: failing the device for surprise removal
+[2] pipe stop: thread exited, pipe closed
+[2] pipe start
+[2] accepted; hello sent (in=64 out=64)
+```
+
+An interface that shows no `pipe stop` at an unplug was never torn down. A
+`pipe stop: thread did not exit in 3 s - abandoned` means its thread wedged;
+its pipe name is reclaimed regardless, so the next device can still start.
 
 ## Layout
 
