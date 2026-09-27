@@ -326,6 +326,42 @@ const PATCHES = [
        */
     ],
   },
+  /*
+   * BUTTON PRESSES THAT WORK ON A PRODUCTION BUILD. Ported from ok-rn's
+   * android/okemu/scripts/stage.js, where it was measured and proven.
+   *
+   * The emulator used to press buttons by writing "1#128\n" to the firmware's
+   * debug console. That parser is behind `#ifdef DEBUG` and reads a Serial
+   * channel a production build does not compile, so on a release build every
+   * press - and every GUI control built on one - did nothing at all.
+   *
+   * This line hands a queued press (src/okemu_press.cpp) straight to the
+   * firmware's own dispatch, the way the DEBUG queue does, but compiled
+   * unconditionally. okemu_press_take() is declared in shim/okemu_prelude.h,
+   * which is force-included, so okcore.cpp gains no #include.
+   *
+   * The anchor is the dispatch itself, kept to ONE line on purpose: in ok-rn
+   * it is byte-identical, unique, and at conditional-compilation depth zero in
+   * all nine pinned releases and the working tree. The line after it is none
+   * of those - `onlykeyhw==OK_HW_DUO` does not exist on the 2.1 line - so a
+   * longer anchor would break the older half of the version matrix.
+   *
+   * key_press and key_off are function-local statics inside
+   * touch_sense_loop(), which is why the hand-over happens in there and why
+   * they are passed by pointer. It also runs on the FIRMWARE THREAD, so writing
+   * an int the same thread is about to read is safe.
+   */
+  {
+    file: 'libraries/onlykey/okcore.cpp',
+    edits: [
+      ['\tif ((key_press > 0) && (key_off > 2)) {',
+       '\t/* Injected by emulator/scripts/stage.js - see src/okemu_press.h.\n' +
+       '\t   Hands over a queued press when the loop is not already holding\n' +
+       '\t   one; does nothing when nothing is queued. */\n' +
+       '\tokemu_press_take(&button_selected, &key_press);\n' +
+       '\tif ((key_press > 0) && (key_off > 2)) {'],
+    ],
+  },
   {
     platform: 'win32',
     file: 'libraries/onlykey/okcore.cpp',

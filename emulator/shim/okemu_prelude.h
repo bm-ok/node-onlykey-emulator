@@ -142,4 +142,27 @@ typedef long long ssize_t;
 #define _Bool bool
 #endif
 
+/*
+ * Presses handed to the loop instead of sensed - see src/okemu_press.h.
+ *
+ * EVERY PLATFORM, which is why it sits outside the _WIN32 block above: it was
+ * first added next to okemu_flash_base, inside that block, and the Linux build
+ * then failed with "okemu_press_take was not declared in this scope".
+ *
+ * Declared here because okcore.cpp includes nothing of ours, and the one line
+ * stage.js injects into touch_sense_loop() has to name this without an
+ * #include of its own. This prelude is force-included into every firmware
+ * translation unit (-include / /FI), so the declaration is simply there.
+ *
+ * Nothing about this is the DEBUG console. It is compiled unconditionally and
+ * is reached on a production build, which is the whole point of it existing.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void okemu_press_take(int *button_selected, int *key_press);
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* OKEMU_PRELUDE_H */

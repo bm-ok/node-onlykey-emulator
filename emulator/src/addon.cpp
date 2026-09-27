@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ok_hal.h"
+#include "okemu_press.h"
 
 namespace {
 
@@ -241,6 +242,75 @@ Napi::Value SetButton(const Napi::CallbackInfo &info) {
   return env.Undefined();
 }
 
+/*
+ * pressQueue(buttons: number[], ticks: number[]) -> accepted
+ *
+ * Presses handed to the firmware's own dispatch - see okemu_press.h. This is
+ * what pressButtons() uses, and unlike the DEBUG console it replaced it works
+ * on a production build. Returns how many were queued; fewer than asked means
+ * the queue was full or an entry was not a button.
+ */
+Napi::Value PressQueue(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsArray() || !info[1].IsArray()) {
+    Napi::TypeError::New(env, "pressQueue(buttons, ticks) requires two arrays")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  Napi::Array b = info[0].As<Napi::Array>(), t = info[1].As<Napi::Array>();
+  if (b.Length() != t.Length()) {
+    Napi::RangeError::New(env, "pressQueue: buttons and ticks differ in length")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  std::vector<uint8_t> buttons(b.Length());
+  std::vector<uint16_t> ticks(t.Length());
+  for (uint32_t i = 0; i < b.Length(); i++) {
+    int bn = b.Get(i).ToNumber().Int32Value();
+    int tn = t.Get(i).ToNumber().Int32Value();
+    /* Out of range becomes 0, which okemu_press_queue() refuses. */
+    buttons[i] = (bn >= 1 && bn <= 6) ? (uint8_t)bn : 0;
+    ticks[i] = (tn >= 1 && tn <= 0xFFFF) ? (uint16_t)tn : 0;
+  }
+  int n = buttons.empty() ? 0
+        : okemu_press_queue(buttons.data(), ticks.data(), (int)buttons.size());
+  return Napi::Number::New(env, n);
+}
+
+/* Presses queued but not yet taken by the firmware; 0 means all taken. */
+Napi::Value PressPending(const Napi::CallbackInfo &info) {
+  return Napi::Number::New(info.Env(), okemu_press_pending());
+}
+
+/* setButtonTicks(n, ticks) - a finger on the pad for N sense rounds. */
+Napi::Value SetButtonTicks(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+    Napi::TypeError::New(env, "setButtonTicks(n, ticks) requires two numbers")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  okemu_set_button_ticks(info[0].As<Napi::Number>().Int32Value(),
+                         info[1].As<Napi::Number>().Int32Value());
+  return env.Undefined();
+}
+
+Napi::Value ButtonTicksLeft(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsNumber()) {
+    Napi::TypeError::New(env, "buttonTicksLeft(n) requires a number")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  return Napi::Number::New(env,
+      okemu_button_ticks_left(info[0].As<Napi::Number>().Int32Value()));
+}
+
+/* Sense rounds since start. A double holds it exactly for 2^53 rounds. */
+Napi::Value Rounds(const Napi::CallbackInfo &info) {
+  return Napi::Number::New(info.Env(), (double)okemu_rounds());
+}
+
 Napi::Value FactoryReset(const Napi::CallbackInfo &info) {
   okemu_factory_reset();
   return info.Env().Undefined();
@@ -266,6 +336,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("start",        Napi::Function::New(env, Start));
   exports.Set("sendHid",      Napi::Function::New(env, SendHid));
   exports.Set("setButton",    Napi::Function::New(env, SetButton));
+  exports.Set("pressQueue",      Napi::Function::New(env, PressQueue));
+  exports.Set("pressPending",    Napi::Function::New(env, PressPending));
+  exports.Set("setButtonTicks",  Napi::Function::New(env, SetButtonTicks));
+  exports.Set("buttonTicksLeft", Napi::Function::New(env, ButtonTicksLeft));
+  exports.Set("rounds",          Napi::Function::New(env, Rounds));
   exports.Set("factoryReset", Napi::Function::New(env, FactoryReset));
   exports.Set("stop",         Napi::Function::New(env, Stop));
   exports.Set("kbdSetReport", Napi::Function::New(env, KbdSetReport));

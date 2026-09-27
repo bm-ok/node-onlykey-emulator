@@ -73,6 +73,10 @@ struct Hal {
 
   /* buttons */
   bool button[OKEMU_NUM_BUTTONS + 1] = { false };
+  /* Samples still owed on a counted hold; 0 means "not counting". */
+  int  ticks[OKEMU_NUM_BUTTONS + 1] = { 0 };
+  /* Sense rounds completed since boot. Monotonic; never reset. */
+  uint64_t rounds = 0;
 
   /* led */
   okemu_rgb px[OKEMU_NUM_PIXELS] = {};
@@ -474,10 +478,141 @@ void okemu_delay_ms(uint32_t ms) {
 
 /* ----------------------------------------------------------- buttons */
 
+/*
+ * Ported from ok-rn's android/okemu/src/ok_hal.cpp, where every claim below was
+ * measured on its soft key. The pin table this replaced was the TOUCHPIN order,
+ * so okemu_set_button(1) arrived as button 5 - see the first comment.
+ */
+
+/*
+ * THE PIN ORDER IS NOT THE BUTTON ORDER. setup() assigns TOUCHPIN1..6 = pins
+ * 1, 22, 23, 17, 15, 16 (OnlyKey.ino:268-273), but okcore.cpp:2574-2628 then
+ * labels those pads in a DIFFERENT order - touchread1 is button 5 and
+ * touchread3 is button 1:
+ *
+ *     touchread1 (pin  1) -> button 5      touchread4 (pin 17) -> button 3
+ *     touchread2 (pin 22) -> button 2      touchread5 (pin 15) -> button 4
+ *     touchread3 (pin 23) -> button 1      touchread6 (pin 16) -> button 6
+ *
+ * This table is indexed by BUTTON, which is what a caller means: the digits of
+ * a PIN are button numbers, and so is a Confirm control. Seeding it with the
+ * TOUCHPIN order instead - the obvious mistake, since the two lists hold the
+ * same six pins - makes okemu_set_button(1) arrive as a press of button 5.
+ * Measured, not reasoned about: the firmware answered a tap on 1 with
+ * "password appended with 5".
+ */
+/*
+ * A DUO SWAPS TWO OF THESE, and it swaps them in the firmware rather than in
+ * the hardware.
+ *
+ * okcore.cpp's rngloop() reads the pads into six globals, and on a DUO two of
+ * those reads are crossed:
+ *
+ *     if (onlykeyhw == OK_HW_DUO) {
+ *         touchread2 = touchRead(TOUCHPIN5);
+ *         touchread5 = touchRead(TOUCHPIN2);
+ *     } else {
+ *         touchread2 = touchRead(TOUCHPIN2);
+ *         touchread5 = touchRead(TOUCHPIN5);
+ *     }
+ *
+ * So on a DUO, "button 2" is whatever TOUCHPIN5 reports and "button 5" is
+ * whatever TOUCHPIN2 reports. A host that holds button 2 against the classic
+ * table is answering a pad the firmware is reading as button 5, and the press
+ * is observed as nothing at all - measured, as "pressing button 2 registered as
+ * null" on an emulated DUO.
+ *
+ * Read from `onlykeyhw` rather than baked in at build time, because that is the
+ * same variable the firmware branches on: if its detection or its DEFINED_HWID
+ * override ever changes, this follows rather than drifting. It is declared in
+ * okcore.cpp and initialised to OK_HW_COLOR, so before the model is settled
+ * this is the classic table - which is correct, since nothing is pressing
+ * anything during calibration.
+ */
+/*
+ * onlykeyhw is WEAK HERE, and that is a version fix.
+ *
+ * The 3.0 line declares it in okcore.cpp:168 (`uint8_t onlykeyhw =
+ * OK_HW_COLOR;`) and branches on it wherever a DUO differs from a classic. THE
+ * 2.1 LINE DOES NOT HAVE IT: that generation asks the chip directly, through
+ * `#define HW_ID SIM_SDID_PINID` (onlykey.h:100), and the DUO did not exist -
+ * its predecessor was OK_GO. So this file, which needs to know which pad map to
+ * use, failed to LINK against v2.1.0 and v2.1.1 with `undefined symbol:
+ * onlykeyhw`. Caught by the version matrix, which is what it is for.
+ *
+ * A weak definition is right in both directions. Where the firmware defines it,
+ * its strong definition wins and the HAL follows whatever the staged build
+ * decided - including a DUO, when OKEMU_MODEL=duo uncomments the firmware's own
+ * DEFINED_HWID override. Where it does not, this supplies OK_HW_COLOR, which is
+ * the only answer a 2.1 build can have: OK_HW_DUO is not a value that release
+ * knows, no build option produces one, and a DUO cannot be staged from it.
+ *
+ * The literal rather than the constant, because onlykey.h is firmware and this
+ * file is the HAL - see pin_for_button(), which cites the same line for the
+ * same reason.
+ */
+__attribute__((weak)) uint8_t onlykeyhw = 5;   /* onlykey.h:105, OK_HW_COLOR */
+
+/*
+ * A DUO HAS TWO PADS, AND ITS THIRD BUTTON IS BOTH AT ONCE.
+ *
+ * okcore.cpp's sense loop has no third branch for a DUO. It reads the two pads
+ * as buttons 2 and 1, and each branch then checks whether THE OTHER one is
+ * also held:
+ *
+ *     else if (touchread2 > ...) {
+ *         button_selected = '2';
+ *         if (onlykeyhw == OK_HW_DUO) {
+ *             if (touchread3 > ...) { button_3_on++; button_3_off = 0; }
+ *             else { button_3_off++; if (button_3_off > 2) button_3_on = 0; }
+ *         }
+ *     }
+ *
+ * - and symmetrically in the touchread3 branch. So "button 3" on a DUO is a
+ * chord, not a pad. The `!= OK_HW_DUO` guards on the touchread1, 4, 5 and 6
+ * branches say the same thing from the other side: those pads produce no button
+ * at all on a DUO.
+ *
+ * A host that holds button 3 expecting a pad gets nothing, because there is
+ * nothing there - measured, as "pressing button 3 registered as null".
+ *
+ * So an emulated DUO reports button 3 as both of its pads held. That is what a
+ * finger on each does, and it is the only way the firmware's counter advances.
+ */
+static bool duo_button_holds_pin(uint8_t pin, const bool *button) {
+  /* The DUO's two pads: TOUCHPIN3 (its button 1) and TOUCHPIN5 (its button 2). */
+  const uint8_t kPadOne = 23;
+  const uint8_t kPadTwo = 15;
+  if (pin == kPadOne) return button[1] || button[3];
+  if (pin == kPadTwo) return button[2] || button[3];
+  return false;   /* no other pad produces a button on a DUO */
+}
+
+static uint8_t pin_for_button(int index) {
+  /* Defined weakly above, so this links against a release without it. */
+  const uint8_t OKEMU_HW_DUO = 9;   /* onlykey.h:104 */
+  static const uint8_t kClassic[OKEMU_NUM_BUTTONS] = { 23, 22, 17, 15, 1, 16 };
+  static const uint8_t kDuo[OKEMU_NUM_BUTTONS]     = { 23, 15, 17, 22, 1, 16 };
+  return (onlykeyhw == OKEMU_HW_DUO ? kDuo : kClassic)[index];
+}
+
+/*
+ * The pad rngloop() samples LAST in a round, and therefore the moment at which
+ * one iteration of the sense path has fully observed the button state.
+ *
+ * touch_sense_loop() opens with rngloop() (okcore.cpp:2536), which reads
+ * TOUCHPIN1, 2, 5, then 3, 4, 6 (okcore.cpp:2762-2775) - pin 16 last - and the
+ * loop then evaluates those six globals and does key_on += 1. So one round of
+ * touchRead() calls is exactly one tick of the firmware's own press counter,
+ * and pin 16 is where a round ends.
+ */
+static const uint8_t kLastPinInRound = 16;
+
 void okemu_set_button(int n, int down) {
   if (n < 1 || n > OKEMU_NUM_BUTTONS) return;
   std::lock_guard<std::mutex> lk(g.mu);
   g.button[n] = down != 0;
+  g.ticks[n] = 0;          /* an explicit hold outranks a counted one */
 }
 
 int okemu_get_button(int n) {
@@ -487,17 +622,119 @@ int okemu_get_button(int n) {
 }
 
 /*
- * setup() assigns TOUCHPIN1..6 = pins 1, 22, 23, 17, 15, 16. The firmware
- * baselines each pad at rest and treats a large positive excursion as a touch,
- * so we report a low idle value and a high one while the button is held.
+ * Hold a button for a COUNT OF MAIN-LOOP ITERATIONS rather than for a wall
+ * time, then release it.
+ *
+ * The firmware bands a press by how many iterations of touch_sense_loop() saw
+ * the pad held - key_on += 1 per iteration, handed to payload() as the
+ * duration argument (OnlyKey.ino:522,631) - and nothing in that path consults
+ * a clock:
+ *
+ *     duration <= 20         gen_press()   types slot N
+ *     duration 21 .. 89      gen_hold()    types slot N+6, the b profile
+ *     duration >= 90         rejected, blink only
+ *
+ * and, above them and reached FIRST because each of those branches returns
+ * before the band dispatch (OnlyKey.ino:873-914):
+ *
+ *     duration >= 72, button 1   backup()
+ *     duration >= 72, button 2   get_key_labels()
+ *     duration >= 72, button 3   lock + CPU_RESTART()
+ *     duration >= 72, button 6   config mode
+ *
+ * So the only safe window for a b-profile read is 21..71, and asking for it in
+ * milliseconds is a bet on how fast this particular handset runs the loop - a
+ * number that has never been measured, and that differs per device, per build
+ * and per whatever else the phone is doing. Overshooting does not fail
+ * cleanly: it takes a backup, or restarts the key.
+ *
+ * Counting the samples ourselves removes the bet. N ticks is N iterations on
+ * any device, so the band is a property of the call rather than of the timing.
+ *
+ * The one caveat, stated because it is invisible otherwise: rngloop() also
+ * runs from calibration (okcore.cpp:6156) and from RNG2()'s entropy spin
+ * (okcore.cpp:7637), and a round from either ages the counters without the
+ * sense loop counting a tick. Neither overlaps a deliberate hold - both run
+ * synchronously on the firmware thread, calibration at startup and RNG2 during
+ * payload processing, which is after the release - but a hold that spanned one
+ * would come out SHORT rather than long, i.e. it errs downward, away from the
+ * destructive bands.
+ */
+void okemu_set_button_ticks(int n, int ticks) {
+  if (n < 1 || n > OKEMU_NUM_BUTTONS) return;
+  std::lock_guard<std::mutex> lk(g.mu);
+  if (ticks <= 0) { g.button[n] = false; g.ticks[n] = 0; return; }
+  g.button[n] = true;
+  g.ticks[n] = ticks;
+}
+
+int okemu_button_ticks_left(int n) {
+  if (n < 1 || n > OKEMU_NUM_BUTTONS) return 0;
+  std::lock_guard<std::mutex> lk(g.mu);
+  return g.ticks[n];
+}
+
+/*
+ * Sense rounds completed since boot.
+ *
+ * Exposed because A RELEASE IS NOT A GAP IN TIME, it is a count of rounds in
+ * which nothing was held, and a caller that wants two presses to arrive as two
+ * presses has to be able to wait for them.
+ *
+ * touch_sense_loop() credits at most ONE pad per round - the branches are
+ * else-ifs - and every one of them does key_off = 0 and key_on += 1
+ * (okcore.cpp:2574-2628). A press is emitted only once key_off > 2
+ * (okcore.cpp:2723), i.e. after three rounds in which no pad read as touched.
+ * So two counted holds with no idle round between them are not two presses at
+ * all: key_on keeps climbing across both, button_selected ends up as whichever
+ * was seen last, and what payload() finally receives is ONE press whose
+ * duration is the sum. Seven ten-tick taps become a single seventy-tick hold -
+ * and eight of them clear 72, which on button 1 is backup() and on button 3 is
+ * lock and CPU_RESTART().
+ *
+ * Counted in rounds rather than measured in milliseconds for the same reason
+ * the holds are: the firmware never consults a clock, and how long a round
+ * takes is a property of the handset. See
+ * ok-rn's FINDING-counted-presses-merge-without-an-idle-gap.md.
+ */
+uint64_t okemu_rounds(void) {
+  std::lock_guard<std::mutex> lk(g.mu);
+  return g.rounds;
+}
+
+/*
+ * The firmware baselines each pad at rest and treats a large positive excursion
+ * as a touch, so we report a low idle value and a high one while held.
  */
 int okemu_touch_for_pin(uint8_t pin) {
-  static const uint8_t kPinForButton[OKEMU_NUM_BUTTONS] = { 1, 22, 23, 17, 15, 16 };
-  for (int i = 0; i < OKEMU_NUM_BUTTONS; i++) {
-    if (kPinForButton[i] == pin)
-      return okemu_get_button(i + 1) ? 6000 : 1000;
+  std::lock_guard<std::mutex> lk(g.mu);
+
+  /* onlykey.h:104 - see pin_for_button() and duo_button_holds_pin() above. */
+  bool held = false;
+  if (onlykeyhw == 9) {
+    held = duo_button_holds_pin(pin, g.button);
+  } else {
+    for (int i = 0; i < OKEMU_NUM_BUTTONS; i++) {
+      if (pin_for_button(i) == pin) { held = g.button[i + 1]; break; }
+    }
   }
-  return 1000;
+
+  /*
+   * Report first, age the counters after.
+   *
+   * The last tick of a hold must still read as HELD for the round it retires
+   * in, or the sense loop counts one fewer iteration than was asked for - and
+   * a one-tick hold, the smallest thing anyone can ask for, would be observed
+   * as no press at all. Releasing here takes effect from the next round.
+   */
+  if (pin == kLastPinInRound) {
+    for (int n = 1; n <= OKEMU_NUM_BUTTONS; n++) {
+      if (g.ticks[n] > 0 && --g.ticks[n] == 0) g.button[n] = false;
+    }
+    g.rounds++;
+  }
+
+  return held ? 6000 : 1000;
 }
 
 /* --------------------------------------------------------------- LED */

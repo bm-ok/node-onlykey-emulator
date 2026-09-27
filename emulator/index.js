@@ -40,20 +40,24 @@ const IFACE_NAME = {
  * This - not the analog touch pads - is the supported way to drive buttons,
  * per EXPLAINER.md line 15. It only exists in DEBUG firmware builds.
  */
-const PRESS_TERMINATOR = '\n';
-
 /*
  * Hold tiers, and the firmware duration each maps to. The bands that matter in
  * payload() (OnlyKey.ino): <=20 tap, >=72 hold actions, >=140 key labels,
  * >=180 DUO config mode, >=360 DUO factory default - so 'hold' alone cannot
  * reach everything a physical hold can.
+ *
+ * The same durations the DEBUG console's modifiers produced ('', '!', '!!',
+ * '!!!'), so moving presses off that console changed no band for any caller.
  */
-const HOLD_MODIFIER = {
-  tap: '',        // duration 1
-  hold: '!',      // 128 - what the legacy space terminator produced
-  long: '!!',     // 200
-  longest: '!!!', // 400
+const HOLD_TICKS = {
+  tap: 1,
+  hold: 128,
+  long: 200,
+  longest: 400,
 };
+
+/* src/okemu_press.h OKEMU_PRESS_QUEUE_MAX - presses waiting at once. */
+const PRESS_QUEUE_MAX = 32;
 
 class OnlyKeyEmulator extends EventEmitter {
   constructor() {
@@ -117,54 +121,95 @@ class OnlyKeyEmulator extends EventEmitter {
   }
 
   /**
-   * Simulate a sequence of presses in one write. The firmware paces the replay
-   * itself, so this is the reliable way to enter a PIN - no host-side delay
-   * between digits to get wrong.
+   * Simulate a sequence of presses. The firmware takes them one at a time from
+   * its own dispatch, so this is the reliable way to enter a PIN - no host-side
+   * delay between digits to get wrong.
+   *
+   * Works on a PRODUCTION build. This used to write "1#128\n" to the DEBUG
+   * console on SEREMU, which a release build does not compile, so every press
+   * silently did nothing there. Presses now go through src/okemu_press.cpp,
+   * which stage.js wires into touch_sense_loop() on every build.
+   *
    * @param {Array<number|object>} presses button numbers, or pressButton() opts
    *                                       objects carrying a `button` field
    */
   pressButtons(presses) {
-    // 16 is the firmware's queue depth (DBG_QUEUE_MAX); past that it drops the
-    // tail with a warning on the debug channel rather than pressing something
-    // the caller did not ask for.
-    if (presses.length > 16) {
-      throw new RangeError(`at most 16 presses per line, got ${presses.length}`);
-    }
-
-    const line = presses.map((p) => {
-      const { button, hold, ticks } = typeof p === 'object' ? p : { button: p };
+    const buttons = [];
+    const ticks = [];
+    for (const p of presses) {
+      const { button, hold, ticks: t } = typeof p === 'object' ? p : { button: p };
       if (!Number.isInteger(button) || button < 1 || button > 6) {
         throw new RangeError(`button must be 1..6, got ${button}`);
       }
-      if (ticks !== undefined) {
-        if (!Number.isInteger(ticks) || ticks < 1) {
-          throw new RangeError(`ticks must be a positive integer, got ${ticks}`);
+      if (t !== undefined) {
+        if (!Number.isInteger(t) || t < 1 || t > 0xFFFF) {
+          throw new RangeError(`ticks must be an integer 1..65535, got ${t}`);
         }
-        return `${button}#${ticks}`;
+        buttons.push(button); ticks.push(t);
+        continue;
       }
       const tier = hold || 'tap';
-      if (!(tier in HOLD_MODIFIER)) {
-        throw new RangeError(`hold must be one of ${Object.keys(HOLD_MODIFIER).join(', ')}, got ${tier}`);
+      if (!(tier in HOLD_TICKS)) {
+        throw new RangeError(`hold must be one of ${Object.keys(HOLD_TICKS).join(', ')}, got ${tier}`);
       }
-      return `${button}${HOLD_MODIFIER[tier]}`;
-    }).join('');
-
-    // And 32 is its raw line buffer (DBG_LINE_MAX, one SEREMU OUT report),
-    // which the modifiers can exhaust before the queue does - sixteen 'longest'
-    // holds is 64 bytes.
-    if (line.length > 32) {
-      throw new RangeError(`press line is ${line.length} bytes, firmware accepts 32: ${line}`);
+      buttons.push(button); ticks.push(HOLD_TICKS[tier]);
     }
 
-    this.writeHid(Buffer.from(`${line}${PRESS_TERMINATOR}`, 'latin1'), IFACE.SEREMU);
+    // Checked BEFORE queueing, so a line that does not fit presses nothing
+    // rather than its first few digits - half a PIN is a wrong PIN attempt.
+    const room = PRESS_QUEUE_MAX - native.pressPending();
+    if (buttons.length > room) {
+      throw new RangeError(`${buttons.length} presses, the queue has room for ${room}`);
+    }
+    const accepted = native.pressQueue(buttons, ticks);
+    if (accepted !== buttons.length) {
+      throw new Error(`press queue took ${accepted} of ${buttons.length}`);
+    }
   }
 
-  /*
-   * Debug-only firmware command paths on the same channel. The wipes spell out
-   * their own confirmation ('0C'/'9C') so that no single stray byte can erase
-   * the device; there is no separate confirm step to follow them with.
+  /** Presses queued but not yet taken by the firmware; 0 once all are in. */
+  pressPending() { return native.pressPending(); }
+
+  /**
+   * A finger on the pad for `ticks` sense rounds, then released - the faithful
+   * emulation, which the firmware SENSES rather than being handed. Slower than
+   * pressButtons() (a round is one 50 ms scheduler period), and for the same
+   * reason exact: the band is the count, not the host's speed.
    */
-  restartDevice()  { this.writeHid(Buffer.from('8\n', 'latin1'), IFACE.SEREMU); }
+  holdButtonTicks(n, ticks) {
+    if (!Number.isInteger(n) || n < 1 || n > 6) {
+      throw new RangeError(`button must be 1..6, got ${n}`);
+    }
+    native.setButtonTicks(n, ticks);
+  }
+
+  /** Rounds still owed on a counted hold of button n. */
+  buttonTicksLeft(n) { return native.buttonTicksLeft(n); }
+
+  /** Sense rounds the firmware has completed since start. */
+  rounds() { return native.rounds(); }
+
+  /**
+   * Restart the device, on any build.
+   *
+   * This used to send '8' on the DEBUG console, which a production build does
+   * not compile. What '8' did was CPU_RESTART(), and okemu_restart.cpp already
+   * turns a CPU_RESTART into this same 'restart' event - the host respawns the
+   * firmware and flash/eeprom persist, exactly as a reset on hardware. So the
+   * host raises it directly. factoryReset() restarts the same way.
+   *
+   * Not a button-3 hold: that only locks and restarts an UNLOCKED key. On a
+   * locked one a press is a PIN digit.
+   */
+  restartDevice()  { this.emit('restart'); }
+
+  /*
+   * Debug-only firmware command paths on the SEREMU channel. The wipes spell
+   * out their own confirmation ('0C'/'9C') so that no single stray byte can
+   * erase the device; there is no separate confirm step to follow them with.
+   * A production build has no such console - factoryReset() is the wipe that
+   * works everywhere.
+   */
   wipeUserspace()  { this.writeHid(Buffer.from('0C\n', 'latin1'), IFACE.SEREMU); }
   wipeAll()        { this.writeHid(Buffer.from('9C\n', 'latin1'), IFACE.SEREMU); }
 
