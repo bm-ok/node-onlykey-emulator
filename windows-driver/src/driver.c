@@ -39,9 +39,9 @@ OkvhidEvtDriverContextCleanup(_In_ WDFOBJECT DriverObject)
 }
 
 /*
- * Anyone may open the interface; there is nothing to authorise here. The
- * point of the callback is not the policy, it is existing at all - see the
- * comment in OkvhidEvtDeviceAdd.
+ * Anyone may open the device; there is nothing to authorise here. The point
+ * of the callback is not the policy, it is existing at all - see the comment
+ * (and its HISTORY note) in OkvhidEvtDeviceAdd.
  */
 VOID
 OkvhidEvtDeviceFileCreate(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request,
@@ -77,13 +77,16 @@ OkvhidEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
      * Handle IRP_MJ_CREATE ourselves.
      *
      * WdfFdoInitSetFilter above makes this a filter, and a filter forwards
-     * create requests down the stack instead of completing them. That is
-     * right for the HID path - HIDCLASS sits above us - but it also means the
-     * bridge cannot open GUID_DEVINTERFACE_OKVHID: the create is passed to
-     * the root-enumerated PDO underneath, which does not implement it, and
-     * CreateFile fails with ERROR_INVALID_FUNCTION. The interface enumerates
-     * perfectly and simply cannot be opened, which points at the caller
-     * rather than at the driver.
+     * create requests down the stack instead of completing them, to the
+     * root-enumerated PDO underneath, which does not implement them.
+     *
+     * HISTORY: this was added for the private device interface
+     * (GUID_DEVINTERFACE_OKVHID) the emulator once opened with
+     * DeviceIoControl - forwarded, its CreateFile failed with
+     * ERROR_INVALID_FUNCTION. That interface is gone: the emulator now uses
+     * the named pipes (see public.h) and nothing registers it. The callback
+     * is kept because removing it has not been tested against HIDCLASS, not
+     * because anything is known to need it.
      *
      * Registering a file-object config stops the forwarding and lets us
      * complete the create locally. AutoForwardCleanupClose is turned off to
@@ -143,9 +146,11 @@ OkvhidEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     }
 
     /*
-     * Default queue: everything arrives here. HID IOCTLs come down from the
-     * class driver, bridge IOCTLs up from the user-mode service. Parallel
-     * because a parked read must not block a bridge push behind it.
+     * Default queue: every HID IOCTL from the class driver arrives here.
+     * (Reports from the emulator do not - they come in on the pipe thread,
+     * bridge.c.) Parallel, so a request that has to wait cannot hold up the
+     * ones behind it; reads that wait for a report are moved to their own
+     * manual queue, below.
      */
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig,
                                            WdfIoQueueDispatchParallel);

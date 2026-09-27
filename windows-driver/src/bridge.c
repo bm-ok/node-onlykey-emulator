@@ -408,10 +408,15 @@ OkvhidPipeAccept(_In_ HANDLE Pipe, _In_ HANDLE Event, _In_ HANDLE StopEvent)
  * One thread per device. Creates the pipe, waits for the emulator, reads
  * frames until it goes away, then does it again.
  *
- * The thread owns the pipe handle for its whole life - creates it, closes it,
- * and nothing else ever touches it. Stopping is a signal on StopEvent, not a
- * handle closed from underneath, so there is no window in which two threads
- * hold the same handle value and one of them is wrong about it still existing.
+ * The thread creates the pipe handle and, normally, closes it; stopping is a
+ * signal on StopEvent, so the thread ends its own waits and cleans up.
+ *
+ * With ONE exception: when OkvhidPipeStop gives up on a thread that did not
+ * exit, it takes the listening handle back and closes it itself, because that
+ * handle holds the pipe NAME the next device needs. The two sides never both
+ * close it - ListenPipe is claimed by interlocked exchange (OkvhidClaimListen),
+ * and whichever takes it closes it, so no one closes a handle the other still
+ * believes it owns.
  */
 static DWORD WINAPI
 OkvhidPipeThread(LPVOID Param)
