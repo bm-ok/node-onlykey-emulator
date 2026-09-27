@@ -211,14 +211,8 @@ module.exports = {
      * uECC_shared_secret2(), whose call to it clang 16 rejects as an implicit
      * declaration. This release has no uECC_shared_secret2 at all, so there is
      * no such call to fix.
-     *
-     * Profile_Offset (win32: password.cpp and the sketch) - the emulator
-     * retypes the extern to int, because MSVC mangles a global's type into its
-     * name. This release predates profiles: Profile_Offset appears nowhere in
-     * its tree, so there is nothing to retype.
      */
     'int uECC_shared_secret2(const uint8_t *public_key,',
-    'extern uint8_t Profile_Offset;',
   ],
   status: 'boots',
   emulator: { linux: 'boots', win32: 'untried' },   /* node-onlykey-emulator's own ladder: linux boots = matrix stage/build/press/compat PASS, VM x64, 2026-09-27 */

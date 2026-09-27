@@ -381,25 +381,23 @@ const PATCHES = [
        'extern "C" uint8_t KeyboardLayout[1];  /* keylayouts.c is C - stage.js */'],
     ],
   },
-  {
-    platform: 'win32',
-    file: 'libraries/password/password.cpp',
-    /* Both occurrences; line 128 already says int and needs no edit. */
-    edits: [
-      ['\textern uint8_t Profile_Offset;',
-       '\textern int Profile_Offset;   /* okcore.cpp:106 defines it int - stage.js */'],
-    ],
-  },
+  /*
+   * Profile_Offset and outputmode are NOT retyped any more. These entries used
+   * to rewrite their `extern uint8_t` declarations (password.cpp, the sketch)
+   * to int, to match the int definition under MSVC mangling. That changed
+   * what the firmware reads (a -42 Profile_Offset is 214 through the shipped
+   * uint8_t view), and it broke the 2.1 line outright: there the DEFINITION is
+   * uint8_t, so the retyped declarations named an int nobody defines. The
+   * /alternatename fallbacks in src/ok_hal.cpp now resolve a uint8_t view to
+   * an int definition where one exists, and every tree keeps the declarations
+   * it shipped with - on every release and on the working tree.
+   */
   {
     platform: 'win32',
     file: 'sketch/OnlyKey.ino',
     edits: [
-      ['extern uint8_t Profile_Offset;',
-       'extern int Profile_Offset;   /* okcore.cpp:106 defines it int - stage.js */'],
       ['extern uint8_t KeyboardLayout[1];',
        'extern "C" uint8_t KeyboardLayout[1];  /* keylayouts.c is C - stage.js */'],
-      ['extern uint8_t outputmode;',
-       'extern int outputmode;   /* okcore.cpp:276 defines it int - stage.js */'],
     ],
   },
   {
@@ -605,6 +603,56 @@ const DEBUG_OFF_PATCHES = [
  * Ported from ok-rn/android/okemu/scripts/stage.js, which hit this first while
  * building for Android from a Windows host.
  */
+/**
+ * Rename Crypto/SHA256.h out of the way, the way upstream later did. Ported
+ * from ok-rn.
+ *
+ * THE 2019 TREE HAS TWO HEADERS WHOSE NAMES DIFFER ONLY IN CASE:
+ * `Crypto/SHA256.h`, the Arduino Crypto library's C++ class, and
+ * `sha256/sha256.h`, Brad Conte's C implementation that defines `SHA256_CTX`.
+ * On a case-insensitive filesystem - every Windows checkout - `#include
+ * "sha256.h"` from fido2/device.h resolves to whichever directory comes first
+ * on the include path, device.h gets the C++ class, and every translation unit
+ * that wants SHA256_CTX fails with "unknown type name" (the emulator's Windows
+ * matrix, v0.2-beta.8). Upstream fixed it the same way: at libraries HEAD the
+ * file is `Crypto/SHA256_2.h`. This renames the STAGED copy for the releases
+ * that predate that, and rewrites the includes that name it.
+ * @returns how many files were repointed, or -1 when there was nothing to do
+ */
+function renameCryptoSha256() {
+  const dir = path.join(STAGE_LIB, 'Crypto');
+  if (!fs.existsSync(dir)) return -1;
+  /*
+   * `existsSync` is case-INSENSITIVE on Windows and answers true for the
+   * already-renamed tree too, so the directory listing is the only honest test
+   * of which name is really on disk.
+   */
+  const names = fs.readdirSync(dir);
+  if (!names.includes('SHA256.h')) return -1;
+
+  fs.renameSync(path.join(dir, 'SHA256.h'), path.join(dir, 'SHA256_2.h'));
+  if (names.includes('SHA256.cpp')) {
+    fs.renameSync(path.join(dir, 'SHA256.cpp'), path.join(dir, 'SHA256_2.cpp'));
+  }
+
+  let rewritten = 0;
+  const re = /(#\s*include\s*)(["<])SHA256\.h([">])/g;
+  const walkAll = (d) => {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+      const q = path.join(d, ent.name);
+      if (ent.isDirectory()) { walkAll(q); continue; }
+      if (!/\.(c|cpp|h|hpp|ino)$/.test(ent.name)) continue;
+      const text = fs.readFileSync(q, 'utf8');
+      if (!re.test(text)) { re.lastIndex = 0; continue; }
+      re.lastIndex = 0;
+      writeFileRetrying(q, text.replace(re, '$1$2SHA256_2.h$3'));
+      rewritten++;
+    }
+  };
+  walkAll(STAGE);
+  return rewritten;
+}
+
 function defuseTimeHeader() {
   const shim = path.join(STAGE_LIB, 'Time', 'Time.h');
   if (fs.existsSync(shim)) fs.rmSync(shim);
@@ -1300,6 +1348,8 @@ function main() {
   copyDir(path.join(ARDUINO, 'hardware', 'teensy', 'avr', 'libraries', 'Time'),
           path.join(STAGE_LIB, 'Time'));
   const timeRepointed = defuseTimeHeader();
+  const shaRenamed = renameCryptoSha256();
+  if (shaRenamed >= 0) console.log(`stage: Crypto/SHA256.h staged as SHA256_2.h, ${shaRenamed} include(s) repointed`);
 
   // 6. documented source-level fixups
   /*

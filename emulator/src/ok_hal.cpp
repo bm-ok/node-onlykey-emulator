@@ -578,6 +578,19 @@ __attribute__((weak)) uint8_t onlykeyhw = 5;   /* onlykey.h:105, OK_HW_COLOR */
  */
 #pragma comment(linker, "/alternatename:?Profile_Offset@@3EA=?Profile_Offset@@3HA")
 #pragma comment(linker, "/alternatename:?outputmode@@3EA=?outputmode@@3HA")
+
+/*
+ * The USB report buffers, C linkage to their C++ definition. core-override's
+ * okemu_usb.cpp names setBuffer / getBuffer / keyboard_buffer with C linkage,
+ * as the 3.0 line gives them (a C declaration precedes okcore.cpp's
+ * definition). v2.1.1 defines them without one, so they are C++-mangled there
+ * and lld-link found no `setBuffer`. Same fallback: only used when the C name
+ * is otherwise undefined. Mangled names read from clang-cl's own output
+ * (llvm-nm of `unsigned char setBuffer[9]`), not guessed.
+ */
+#pragma comment(linker, "/alternatename:setBuffer=?setBuffer@@3PAEA")
+#pragma comment(linker, "/alternatename:getBuffer=?getBuffer@@3PAEA")
+#pragma comment(linker, "/alternatename:keyboard_buffer=?keyboard_buffer@@3PAEA")
 #endif
 
 /*
