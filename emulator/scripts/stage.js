@@ -620,7 +620,7 @@ function defuseTimeHeader() {
       const text = fs.readFileSync(p, 'utf8');
       if (!re.test(text)) { re.lastIndex = 0; continue; }
       re.lastIndex = 0;
-      fs.writeFileSync(p, text.replace(re, '$1$2TimeLib.h$3'));
+      writeFileRetrying(p, text.replace(re, '$1$2TimeLib.h$3'));
       rewritten++;
     }
   };
@@ -702,7 +702,7 @@ function gateDebug(want) {
     }
   }
 
-  fs.writeFileSync(target, text);
+  writeFileRetrying(target, text);
   console.log(`stage: DEBUG gate turned ${want ? 'ON' : 'OFF'} (was ${on ? 'ON' : 'OFF'})`);
   return want;
 }
@@ -736,7 +736,7 @@ function gateKeylayouts(debugOn) {
   text = debugOn
     ? text.split(OFF).join(ON + ' - re-enabled by stage.js to match the DEBUG gate')
     : text.split(ON).join(OFF + ' - removed by stage.js to match the DEBUG gate');
-  fs.writeFileSync(target, text);
+  writeFileRetrying(target, text);
   console.log(`stage: keyboard layouts ${debugOn ? 'US English only' : 'ALL ENABLED'} ` +
     '- synced to the DEBUG gate');
   return debugOn;
@@ -810,7 +810,7 @@ function materialise(repo, sha, dest) {
 
     const target = path.join(dest, entry.file);
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, batch.slice(start, start + size));
+    writeFileRetrying(target, batch.slice(start, start + size));
 
     at = start + size + 1;              // trailing newline after each object
   }
@@ -843,7 +843,7 @@ function materialiseVersion(release) {
     rmrf(dest);
     fs.mkdirSync(dest, { recursive: true });
     const count = materialise(path.join(CHECKOUTS, repo), sha, dest);
-    fs.writeFileSync(stamp, sha + '\n');
+    writeFileRetrying(stamp, sha + '\n');
     out[repo] = dest;
     console.log(`stage: ${repo}@${sha} unpacked, ${count} files`);
   }
@@ -862,11 +862,10 @@ function materialiseVersion(release) {
  * next attempt succeeded. So: a few short retries, then the original error.
  * Synchronous on purpose - everything around it is.
  */
-function copyFileRetrying(src, dst, attempts = 5) {
+function retryingLock(fn, attempts = 5) {
   for (let i = 1; ; i++) {
     try {
-      fs.copyFileSync(src, dst);
-      return;
+      return fn();
     } catch (e) {
       const transient = e && (e.code === 'EBUSY' || e.code === 'EPERM' || e.code === 'EACCES');
       if (!transient || i >= attempts) throw e;
@@ -874,6 +873,21 @@ function copyFileRetrying(src, dst, attempts = 5) {
       while (Date.now() < until) { /* hold: no event loop to await on */ }
     }
   }
+}
+
+function copyFileRetrying(src, dst) {
+  return retryingLock(() => fs.copyFileSync(src, dst));
+}
+
+/*
+ * WRITES NEED IT TOO. The emulator's matrix hit exactly this on Windows: EBUSY
+ * opening .stage/libraries/onlykey/okcore.cpp for the patch write, twice, each
+ * time when the working tree was staged straight after a release - the copy
+ * had just landed and something (an indexer, a scanner) still held it. Every
+ * staged-file write in this script goes through here.
+ */
+function writeFileRetrying(file, data) {
+  return retryingLock(() => fs.writeFileSync(file, data));
 }
 
 function copyDir(src, dst) {
@@ -974,7 +988,7 @@ function applyPatches(extra = [], absent = []) {
       text = text.split(from2).join(from2 === from ? to : crlf(to));
       applied++;
     }
-    fs.writeFileSync(target, text);
+    writeFileRetrying(target, text);
   }
   for (const declared of declaredAbsent) {
     if (!seen.has(declared)) {
@@ -1119,7 +1133,7 @@ function rewriteRegisterBlocks() {
       '#endif\n').join('') +
     '\n';
   text = text.replace(anchor, (m) => m + decl);
-  fs.writeFileSync(target, text);
+  writeFileRetrying(target, text);
 
   /*
    * EVERY STAGED SOURCE, not just kinetis.h. Libraries carry their own copies
@@ -1145,7 +1159,7 @@ function rewriteRegisterBlocks() {
   for (const full of sources) {
     const before = fs.readFileSync(full, 'utf8');
     const after = before.replace(CAST_LITERAL, rebase);
-    if (after !== before) fs.writeFileSync(full, after);
+    if (after !== before) writeFileRetrying(full, after);
   }
 
   /* The check: anything still casting a block address fails the stage. */
@@ -1258,8 +1272,24 @@ function main() {
 
   // 5. vendored libraries and the sketch
   copyDir(LIB_SRC, STAGE_LIB);
-  /* A release may keep its sketch elsewhere (v0.2-beta.8: OnlyKey_Beta/). */
-  copyDir(path.join(FW, (release.sketch && release.sketch.dir) || 'OnlyKey'), STAGE_SKETCH);
+  /*
+   * WHERE THE SKETCH LIVES IS PER-RELEASE (ported from ok-rn). Every release
+   * from v2.1.0 on keeps it at OnlyKey/OnlyKey.ino, but the 2019 beta line has
+   * OnlyKey_Beta/OnlyKey_Beta.ino - a different directory AND file name. It is
+   * staged AS OnlyKey.ino either way, because src/okemu_sketch.cpp includes
+   * that name, and the name is not the part that varies between releases.
+   */
+  const sketch = release.sketch || { dir: 'OnlyKey', file: 'OnlyKey.ino' };
+  copyDir(path.join(FW, sketch.dir), STAGE_SKETCH);
+  if (sketch.file !== 'OnlyKey.ino') {
+    const from = path.join(STAGE_SKETCH, sketch.file);
+    if (!fs.existsSync(from)) {
+      throw new Error(
+        `stage: ${release.version} names its sketch ${sketch.dir}/${sketch.file}, ` +
+        'which is not in the checkout at this pin');
+    }
+    fs.renameSync(from, path.join(STAGE_SKETCH, 'OnlyKey.ino'));
+  }
 
   /*
    * Arduino's Time library is staged rather than included from the Arduino
@@ -1302,7 +1332,7 @@ function main() {
    * ok-versions.json (test/compat.js) has to - reading OKEMU_VERSION from its
    * own environment would trust the caller rather than the build.
    */
-  fs.writeFileSync(path.join(STAGE, 'build.json'), JSON.stringify({
+  writeFileRetrying(path.join(STAGE, 'build.json'), JSON.stringify({
     version: release.version,
     pins: release.pins ? { libraries: release.pins.libraries,
       'OnlyKey-Firmware': release.pins['OnlyKey-Firmware'] } : null,
