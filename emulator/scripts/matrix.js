@@ -34,6 +34,8 @@ const versions = require('./versions');
 
 const EMU = path.resolve(__dirname, '..');
 const WIN = process.platform === 'win32';
+/* Per-release build logs (gitignored). */
+const LOGS = path.join(EMU, '.matrix');
 
 function run(cmd, env = {}, timeoutMs = 20 * 60 * 1000) {
   const r = spawnSync(cmd, {
@@ -64,11 +66,23 @@ function buildAndCheck(version) {
 
   fs.rmSync(path.join(EMU, 'build'), { recursive: true, force: true });
   const b = run('npm run rebuild', env);
+  /*
+   * The whole build log is kept, one file per release: a failed build's
+   * last line is only "gyp ERR! ... MSBuild.exe failed", and the first sweep
+   * on Windows lost v3.0.4's actual compiler error that way.
+   */
+  fs.mkdirSync(LOGS, { recursive: true });
+  fs.writeFileSync(path.join(LOGS, `${version}.build.log`), b.out);
   const staged = /^stage: (v|working)/m.test(b.out) && !/a patch did not apply/.test(b.out);
   row.stage = staged ? 'ok' : 'FAIL';
   row.build = b.ok ? 'ok' : 'FAIL';
   if (!b.ok) {
-    row.note = verdict(b.out).slice(0, 120);
+    /* The first compiler or linker error says more than gyp's summary. */
+    const first = b.out.split(/\r?\n/).find((l) =>
+      /\berror\b[: ]|undefined (reference|symbol)|unresolved external/i.test(l) &&
+      !/gyp ERR!/.test(l));
+    row.note = (first ? first.trim() : verdict(b.out)).slice(0, 160) +
+      ` (log: .matrix/${version}.build.log)`;
     return row;
   }
   const p = run('node test/press.js', {}, 120000);

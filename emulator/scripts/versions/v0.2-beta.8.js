@@ -203,9 +203,25 @@ module.exports = {
   absentPatterns: [
     '#define factorysectoradr 0x5800',
     'uint32_t length = (uint32_t)end_byte - (uint32_t)start_byte;',
+    /*
+     * node-onlykey-emulator's own patches, which ok-rn does not carry. Checked
+     * against this pin, 2026-09-27:
+     *
+     * uECC.c - the emulator adds a uECC_point_mult() prototype above
+     * uECC_shared_secret2(), whose call to it clang 16 rejects as an implicit
+     * declaration. This release has no uECC_shared_secret2 at all, so there is
+     * no such call to fix.
+     *
+     * Profile_Offset (win32: password.cpp and the sketch) - the emulator
+     * retypes the extern to int, because MSVC mangles a global's type into its
+     * name. This release predates profiles: Profile_Offset appears nowhere in
+     * its tree, so there is nothing to retype.
+     */
+    'int uECC_shared_secret2(const uint8_t *public_key,',
+    'extern uint8_t Profile_Offset;',
   ],
   status: 'boots',
-  emulator: { linux: 'untried', win32: 'untried' },   /* node-onlykey-emulator's own ladder */
+  emulator: { linux: 'boots', win32: 'untried' },   /* node-onlykey-emulator's own ladder: linux boots = matrix stage/build/press/compat PASS, VM x64, 2026-09-27 */
   notes: [
     'IT UNLOCKS. The 2019 beta has never unlocked in this project until now:',
     '45 passed, 2 failed, 10 skipped, up from 12 passed. It boots, provisions,',
