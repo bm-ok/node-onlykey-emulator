@@ -220,10 +220,13 @@ async function main() {
 
   ipc.on('rebuild', () => {
     log('rebuild requested - running npm run build');
-    const r = spawnSync('npm', ['run', 'build'], {
-      cwd: path.join(__dirname, '..'),
-      stdio: 'inherit',
-    });
+    /* npm is npm.cmd on Windows, which only runs through a shell - and there
+     * as one command string, since an args array with shell:true is
+     * deprecated (DEP0190). Linux is spawned directly, as before. */
+    const opts = { cwd: path.join(__dirname, '..'), stdio: 'inherit' };
+    const r = process.platform === 'win32'
+      ? spawnSync('npm run build', { ...opts, shell: true })
+      : spawnSync('npm', ['run', 'build'], opts);
     if (r.status !== 0) {
       /* Don't exit on a failed build: that would have pm2 respawn us onto the
        * old binary in a loop while the developer is still fixing the error. */

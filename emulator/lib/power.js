@@ -20,17 +20,26 @@
  * Stopping has to go through pm2, not process.exit(): pm2's whole job here is
  * to respawn the daemon after CPU_RESTART(), so a plain exit would come
  * straight back up. `pm2 stop` marks it stopped and it stays down.
+ *
+ * ON WINDOWS there is no UDC. The bus half is the okvhid driver's root
+ * devices, and removing those needs an elevated token (windows-driver/
+ * hotplug.ps1) that this GUI does not run with. So unplug there is the POWER
+ * half only: the emulator stops, its pipe clients close, and the four devices
+ * stay enumerated but silent until "Plug in" - a key with no power, still in
+ * the port. What clients see is a device that stops answering, not one that
+ * disappears; a real removal is hotplug.ps1 -Off, elevated.
  */
 'use strict';
 
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { exec, execFile } = require('child_process');
 
 const GADGET_DIR = process.env.OKEMU_GADGET_DIR
   || '/sys/kernel/config/usb_gadget/onlykey';
 const UDC_FILE = `${GADGET_DIR}/UDC`;
 const PM2_APP = process.env.OKEMU_PM2_APP || 'onlykey-emulator';
 const PM2_BIN = process.env.OKEMU_PM2_BIN || 'pm2';
+const WIN = process.platform === 'win32';
 
 /** Name of the controller to bind to, e.g. "dummy_udc.0". */
 function udcName() {
@@ -50,10 +59,19 @@ function isBound() {
 
 function pm2(action) {
   return new Promise((resolve, reject) => {
-    execFile(PM2_BIN, [action, PM2_APP], { timeout: 20000 }, (err, stdout, stderr) => {
+    /*
+     * On Windows `pm2` is pm2.cmd, a batch file, and execFile() cannot run one
+     * without a shell: it failed "spawn pm2 ENOENT" even with pm2 installed.
+     * The arguments are fixed strings, so the shell has nothing to interpret.
+     * Passed as ONE command string there: an args array with shell:true is
+     * deprecated (DEP0190), since the shell only concatenates it anyway.
+     */
+    const done = (err, stdout, stderr) => {
       if (err) reject(new Error(`pm2 ${action} ${PM2_APP}: ${stderr || err.message}`));
       else resolve(stdout);
-    });
+    };
+    if (WIN) exec(`${PM2_BIN} ${action} ${PM2_APP}`, { timeout: 20000 }, done);
+    else execFile(PM2_BIN, [action, PM2_APP], { timeout: 20000 }, done);
   });
 }
 
@@ -61,6 +79,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Cut power: detach from the bus, then stop the firmware process. */
 async function powerOff() {
+  if (WIN) { await pm2('stop'); return null; }   /* power half only - see top */
   const name = udcName();          /* remember it before unbinding */
   if (isBound()) fs.writeFileSync(UDC_FILE, '\n');
   await pm2('stop');
@@ -74,6 +93,8 @@ async function powerOff() {
  */
 async function powerOn() {
   await pm2('start');
+  /* Windows: the daemon reattaches to the okvhid pipes itself; no bus step. */
+  if (WIN) return null;
   await sleep(1500);
   const name = udcName();
   if (!name) throw new Error('no UDC available - run scripts/gadget-setup.sh');
