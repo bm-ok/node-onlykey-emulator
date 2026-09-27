@@ -110,7 +110,7 @@ GUI's buttons:
 ```sh
 ./emulator/bin/press.js 1          # tap button 1
 ./emulator/bin/press.js 1 2 3 4    # a PIN, sent in one write
-./emulator/bin/press.js 3:long     # tap | hold | long | longest
+./emulator/bin/press.js 1:press    # modes: tap | press | hold
 ./emulator/bin/press.js --watch    # stream LED and debug output
 ```
 

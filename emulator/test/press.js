@@ -54,7 +54,31 @@ async function drain(label) {
   await sleep(1500);   /* the last press still has to clear key_off > 2 */
 }
 
+/*
+ * The mode table, checked against the lib's own band arithmetic before any
+ * device runs: each mode's duration must land in the band it is named for, and
+ * the UI's clock-to-mode helper must switch at the band edges (20 / 72 ticks,
+ * 50 ms each). No device needed - this is what a GUI relies on.
+ */
+function checkModes() {
+  const { MODE_TICKS, modeForHeldMs } = require('../lib/press-modes');
+  const { bandFor } = require('node-onlykey-lib/device').press;
+  const want = { tap: 'tap', press: 'hold', hold: 'gesture' };   // mode -> lib band
+  for (const [mode, band] of Object.entries(want)) {
+    const got = bandFor(MODE_TICKS[mode]);
+    if (got !== band) throw new Error(`mode ${mode} = ${MODE_TICKS[mode]} ticks is band ${got}, want ${band}`);
+  }
+  const edges = [[0, 'tap'], [1049, 'tap'], [1050, 'press'], [3599, 'press'],
+    [3600, 'hold'], [600000, 'hold']];
+  for (const [ms, mode] of edges) {
+    const got = modeForHeldMs(ms);
+    if (got !== mode) throw new Error(`${ms} ms held is ${got}, want ${mode}`);
+  }
+  console.log(`modes: ${JSON.stringify(MODE_TICKS)} land in their bands; UI edges ok`);
+}
+
 (async () => {
+  checkModes();
   console.log(`storage: ${storageDir}`);
   emu.start({ storageDir });
   await sleep(3000);   /* calibration and the first sense rounds */

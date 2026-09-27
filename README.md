@@ -476,7 +476,8 @@ npm start       # nw .
 ```
 
 The window shows the NeoPixel colour live, six clickable buttons (click for a
-tap; hold past 400 ms, 2 s or 5 s for the three hold tiers), and a colour-coded
+tap; hold past 1 s for a press, past 3.6 s for a hold - the button shows which
+while you hold it), and a colour-coded
 log of every HID interface with per-interface filters. Toolbar buttons cover
 restart, rebuild-and-restart, and factory reset.
 
@@ -603,12 +604,17 @@ emu.on('led',  (px)   => console.log('LED', px[0]));
 emu.on('log',  (text) => process.stdout.write(text));   // HID4 debug output
 emu.on('hid',  (buf, iface) => console.log('HID', iface, buf.toString('hex')));
 
-emu.pressButton(3);                        // tap
-emu.pressButton(1, { hold: 'hold' });      // 128 - the >=72 actions
-emu.pressButton(6, { hold: 'longest' });   // 400 - the >=360 DUO action
-emu.pressButton(2, { ticks: 250 });        // exact duration
+emu.pressButton(3);                        // tap   - types slot 3
+emu.pressButton(3, 'press');               // press - types slot 3's b profile
+emu.pressButton(1, 'hold');                // hold  - button 1's gesture (backup)
 emu.pressButtons([1, 2, 3, 4, 5, 6, 1]);   // a whole PIN, paced by the firmware
 ```
+
+Presses are named by MODE - `tap`, `press` or `hold` - never by a duration.
+`emulator/lib/press-modes.js` is the one place a mode becomes firmware ticks,
+using node-onlykey-lib's press table (the same one ok-rn uses), and presses
+reach the firmware's own dispatch, so they work on a production build as well
+as a DEBUG one.
 
 Or over IPC — host the socket and let the emulator dial in. This is what the
 GUI does, and it is what survives device reboots:

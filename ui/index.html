@@ -142,8 +142,8 @@
     <div>
       <div class="label">Buttons</div>
       <div class="pad" id="pad"></div>
-      <p class="hint">Click = tap. Hold &gt;400 ms, &gt;2 s or &gt;5 s for the three
-        hold tiers.</p>
+      <p class="hint">Click = tap. Hold past 1 s for a press (profile b), past
+        3.6 s for a hold (the button's gesture). The button shows which.</p>
     </div>
 
     <div>
@@ -153,7 +153,7 @@
         <input id="backup-delay" type="number" min="1" max="60" value="5" title="seconds before the press is sent">
       </div>
       <p class="hint" id="backup-hint">
-        Holds button <code>1</code> (<code>1!</code>), which makes the device
+        Holds button <code>1</code> (a <code>hold</code>), which makes the device
         <em>type</em> the backup on HID1 — into whatever window has focus. The
         countdown is your window to click into an editor. Needs the device
         unlocked.
@@ -345,37 +345,58 @@ const hex = (b64) =>
   Buffer.from(b64, 'base64').toString('hex').replace(/(..)/g, '$1 ').trim();
 
 /* ---------- buttons ----------
- * Hold duration decides which firmware action fires, so the GUI measures it and
- * picks a tier. The wall-clock thresholds mirror the firmware's own duration
- * bands (payload(), OnlyKey.ino): a plain hold reaches the >=72 actions, and
- * the two deeper tiers reach the >=180 and >=360 ones a plain hold cannot.
+ * THE UI DECIDES THE MODE; THE MODE IS WHAT GETS SENT. Ported from ok-rn's
+ * keypad (useOkEmu.ts beginHold/endHold).
+ *
+ * Nothing is sent on press-down. The UI times the hold on its own clock, shows
+ * the mode it has reached while the button is down, and on release sends ONE
+ * `press(key, mode)` - tap, press or hold. No duration crosses the wire: the
+ * emulator's lib/press-modes.js turns the mode into firmware ticks, from
+ * node-onlykey-lib's table. Before this the UI sent its own tick tiers, and
+ * its 'hold' (128) was a gesture - nothing could type the b profile.
+ *
+ * The mode is read from the WALL CLOCK at release, not from counting interval
+ * firings, which ok-rn measured running ~30% short - enough to land a press
+ * in the wrong band at the edges.
  */
-const HOLD_TIERS = [
-  { ms: 5000, hold: 'longest' },
-  { ms: 2000, hold: 'long' },
-  { ms: 400,  hold: 'hold' },
-  { ms: 0,    hold: 'tap' },
-];
+const pressModes = requireEmu('lib/press-modes');
 const pad = $('pad');
 for (let n = 1; n <= 6; n++) {
   const b = document.createElement('button');
   b.textContent = n;
   let downAt = 0;
+  let repaint = null;
 
-  const down = () => { downAt = Date.now(); b.classList.add('held'); };
+  const show = () => {
+    const mode = pressModes.modeForHeldMs(Date.now() - downAt);
+    b.textContent = `${n} · ${mode}`;
+    b.dataset.mode = mode;
+  };
+  const down = (e) => {
+    if (downAt) return;
+    downAt = Date.now();
+    b.classList.add('held');
+    if (e && e.pointerId !== undefined) b.setPointerCapture(e.pointerId);
+    show();
+    repaint = setInterval(show, pressModes.HOLD_TICK_MS);
+  };
   const up = () => {
     if (!downAt) return;
+    clearInterval(repaint); repaint = null;
     const held = Date.now() - downAt;
     downAt = 0;
     b.classList.remove('held');
-    const { hold } = HOLD_TIERS.find((t) => held >= t.ms);
-    client.press(n, { hold });
-    sys(`button ${n} ${hold} press (${held} ms)`);
+    b.textContent = n;
+    delete b.dataset.mode;
+    const mode = pressModes.modeForHeldMs(held);
+    client.press(n, mode);
+    const what = mode === 'hold' && pressModes.gestureFor(n);
+    sys(`button ${n} ${mode} (${held} ms)${what ? ` - ${what}` : ''}`);
   };
 
-  b.addEventListener('mousedown', down);
-  b.addEventListener('mouseup', up);
-  b.addEventListener('mouseleave', up);   // never strand a held button
+  b.addEventListener('pointerdown', down);
+  b.addEventListener('pointerup', up);
+  b.addEventListener('pointercancel', up);   // never strand a held button
   pad.append(b);
 }
 
@@ -386,11 +407,10 @@ for (let n = 1; n <= 6; n++) {
  * Hence the countdown - it exists purely to give you time to click into an
  * editor before the device starts typing.
  *
- * The tier matters. OnlyKey.ino gates backup on `duration < 180 && duration >=
- * 72`, so 'hold' (128) lands in the window and the deeper tiers overshoot it
- * and do nothing at all on non-DUO hardware.
+ * The mode matters. OnlyKey.ino gates backup on `duration < 180 && duration >=
+ * 72`, and a 'hold' is the gesture band (72 ticks) - inside that window.
  */
-const BACKUP_HOLD = 'hold';
+const BACKUP_MODE = 'hold';
 const btnBackup = $('btn-backup');
 const backupDelay = $('backup-delay');
 let backupTimer = null;
@@ -421,7 +441,7 @@ btnBackup.addEventListener('click', () => {
       return;
     }
     stopBackupCountdown();
-    client.press(1, { hold: BACKUP_HOLD });
+    client.press(1, BACKUP_MODE);
     sys('backup: button 1 hold sent - the device is typing into the focused window');
   }, 1000);
 });

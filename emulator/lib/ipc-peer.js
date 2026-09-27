@@ -119,7 +119,7 @@ class IpcPeer extends EventEmitter {
   _onCommand(msg) {
     try {
       switch (msg.t) {
-        case 'press':         this.emu.pressButton(msg.button, { hold: msg.hold, ticks: msg.ticks }); break;
+        case 'press':         this.emu.pressButton(msg.button, msg.mode); break;
         case 'setButton':     this.emu.setButton(msg.button, !!msg.down); break;
         case 'writeHid':      this.emu.writeHid(b64.unpack(msg.data), msg.iface); break;
         case 'factoryReset':  this.emu.factoryReset(); break;

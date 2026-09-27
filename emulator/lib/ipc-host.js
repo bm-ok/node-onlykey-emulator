@@ -154,7 +154,7 @@ class IpcHost extends EventEmitter {
   }
 
   /* ---- commands, sent to the emulator ---- */
-  press(button, opts = {}) { this._send({ t: 'press', button, hold: opts.hold, ticks: opts.ticks }); }
+  press(button, mode = 'tap') { this._send({ t: 'press', button, mode }); }
   setButton(button, down)  { this._send({ t: 'setButton', button, down: !!down }); }
   writeHid(iface, data)    { this._send({ t: 'writeHid', iface, data: b64.pack(data) }); }
   kbdSetReport(data)       { this._send({ t: 'kbdSetReport', data: b64.pack(data) }); }

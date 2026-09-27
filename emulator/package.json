@@ -17,6 +17,7 @@
   "gypfile": true,
   "dependencies": {
     "node-addon-api": "^8.9.1",
-    "node-gyp": "^13.0.1"
+    "node-gyp": "^13.0.1",
+    "node-onlykey-lib": "file:../../node-onlykey-lib"
   }
 }

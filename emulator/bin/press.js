@@ -4,9 +4,12 @@
  *
  *   ./emulator/bin/press.js 1              tap button 1
  *   ./emulator/bin/press.js 1 2 3 4        a four-digit PIN
- *   ./emulator/bin/press.js 3:long         hold tiers: tap|hold|long|longest
- *   ./emulator/bin/press.js 6#120          an exact firmware tick count
+ *   ./emulator/bin/press.js 1:press        types slot 1's b profile
+ *   ./emulator/bin/press.js 1:hold         button 1's gesture (a backup)
  *   ./emulator/bin/press.js --watch        no presses, just stream LED + debug
+ *
+ * Modes, not ticks - see lib/press-modes.js. A press is named by what it
+ * means (tap / press / hold); this tool never sends a duration.
  *
  * Why this listens rather than connects
  * -------------------------------------
@@ -23,16 +26,16 @@
 
 const IpcHost = require('../lib/ipc-host');
 
-const HOLD_TIERS = ['tap', 'hold', 'long', 'longest'];
+const { PRESS_MODES } = require('../lib/press-modes');
 
 function usage(msg) {
   if (msg) console.error(`press: ${msg}\n`);
   console.error(`usage: press.js [options] [button ...]
 
-  button      1..6, optionally  N:tier  or  N#ticks
-              tier is one of: ${HOLD_TIERS.join(', ')}  (default tap)
+  button      1..6, optionally  N:mode
+              mode is one of: ${PRESS_MODES.join(', ')}  (default tap)
 
-  --hold=T    default tier for bare button numbers
+  --mode=M    default mode for bare button numbers
   --watch     keep running and stream LED and debug output
   --socket=P  socket path (default: $XDG_RUNTIME_DIR/onlykey-emulator.sock)
   --wait=MS   how long to wait for the emulator to dial in (default 8000)
@@ -42,7 +45,7 @@ function usage(msg) {
 }
 
 /* ------------------------------------------------------------------ args */
-const opts = { watch: false, quiet: false, wait: 8000, socketPath: undefined, hold: 'tap' };
+const opts = { watch: false, quiet: false, wait: 8000, socketPath: undefined, mode: 'tap' };
 const presses = [];
 
 for (const arg of process.argv.slice(2)) {
@@ -51,26 +54,24 @@ for (const arg of process.argv.slice(2)) {
   else if (arg === '--quiet') opts.quiet = true;
   else if (arg.startsWith('--socket=')) opts.socketPath = arg.slice(9);
   else if (arg.startsWith('--wait=')) opts.wait = Number(arg.slice(7));
-  else if (arg.startsWith('--hold=')) opts.hold = arg.slice(7);
+  else if (arg.startsWith('--mode=')) opts.mode = arg.slice(7);
   else if (arg.startsWith('-')) usage(`unknown option ${arg}`);
   else {
-    /* N, N:tier or N#ticks - the ':' and '#' forms mirror the firmware's own. */
-    const m = /^([1-6])(?::([a-z]+)|#(\d+))?$/.exec(arg);
-    if (!m) usage(`bad button "${arg}" - want 1..6, N:tier or N#ticks`);
-    const p = { button: Number(m[1]) };
-    if (m[3]) p.ticks = Number(m[3]);
-    else p.hold = m[2] || opts.hold;
-    presses.push(p);
+    /* N or N:mode. */
+    const m = /^([1-6])(?::([a-z]+))?$/.exec(arg);
+    if (!m) usage(`bad button "${arg}" - want 1..6 or N:mode`);
+    presses.push({ button: Number(m[1]), mode: m[2] || null });
   }
 }
 
-if (!HOLD_TIERS.includes(opts.hold)) usage(`--hold must be one of ${HOLD_TIERS.join(', ')}`);
+if (!PRESS_MODES.includes(opts.mode)) usage(`--mode must be one of ${PRESS_MODES.join(', ')}`);
 for (const p of presses) {
-  if (p.hold && !HOLD_TIERS.includes(p.hold)) usage(`bad tier "${p.hold}"`);
+  p.mode = p.mode || opts.mode;
+  if (!PRESS_MODES.includes(p.mode)) usage(`bad mode "${p.mode}"`);
 }
-/* 16 is the firmware's queue depth (DBG_QUEUE_MAX); past that it drops the
- * tail rather than pressing something the caller did not ask for. */
-if (presses.length > 16) usage(`at most 16 presses per run, got ${presses.length}`);
+/* 32 is the press queue's depth (src/okemu_press.h); the emulator refuses a
+ * longer run whole rather than pressing only part of it. */
+if (presses.length > 32) usage(`at most 32 presses per run, got ${presses.length}`);
 if (!presses.length && !opts.watch) usage('nothing to do - give a button, or --watch');
 
 /* ------------------------------------------------------------------ run */
@@ -115,12 +116,10 @@ host.once('ready', () => {
    * entered with host-side delay between digits is the documented way to get
    * this wrong - this is what keeps that delay at zero.
    */
-  for (const p of presses) host.press(p.button, p);
+  for (const p of presses) host.press(p.button, p.mode);
 
   if (presses.length) {
-    const shown = presses
-      .map((p) => (p.ticks ? `${p.button}#${p.ticks}` : `${p.button}:${p.hold}`))
-      .join(' ');
+    const shown = presses.map((p) => `${p.button}:${p.mode}`).join(' ');
     console.error(`press: sent ${shown}`);
   }
 

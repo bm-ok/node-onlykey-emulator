@@ -40,21 +40,9 @@ const IFACE_NAME = {
  * This - not the analog touch pads - is the supported way to drive buttons,
  * per EXPLAINER.md line 15. It only exists in DEBUG firmware builds.
  */
-/*
- * Hold tiers, and the firmware duration each maps to. The bands that matter in
- * payload() (OnlyKey.ino): <=20 tap, >=72 hold actions, >=140 key labels,
- * >=180 DUO config mode, >=360 DUO factory default - so 'hold' alone cannot
- * reach everything a physical hold can.
- *
- * The same durations the DEBUG console's modifiers produced ('', '!', '!!',
- * '!!!'), so moving presses off that console changed no band for any caller.
- */
-const HOLD_TICKS = {
-  tap: 1,
-  hold: 128,
-  long: 200,
-  longest: 400,
-};
+/* Press modes (tap / press / hold) and their firmware durations - see
+ * lib/press-modes.js, the one place a mode becomes ticks. */
+const { MODE_TICKS, PRESS_MODES } = require('./lib/press-modes');
 
 /* src/okemu_press.h OKEMU_PRESS_QUEUE_MAX - presses waiting at once. */
 const PRESS_QUEUE_MAX = 32;
@@ -107,52 +95,42 @@ class OnlyKeyEmulator extends EventEmitter {
   }
 
   /**
-   * Simulate a button press. n is 1..6.
-   * @param {number}  n
-   * @param {object}  [opts]
-   * @param {string}  [opts.hold]  'tap' (default), 'hold', 'long' or 'longest'
-   * @param {number}  [opts.ticks] exact firmware duration, overrides opts.hold
+   * Press button n (1..6) in one of the press modes: 'tap' (default), 'press'
+   * or 'hold' - see MODE_TICKS. A caller never names a duration; it says what
+   * kind of press it means, and the UI decides that from its own timer.
+   * @param {number} n
+   * @param {string} [mode='tap']
    */
-  pressButton(n, opts = {}) {
-    if (!Number.isInteger(n) || n < 1 || n > 6) {
-      throw new RangeError(`button must be 1..6, got ${n}`);
-    }
-    this.pressButtons([{ button: n, ...opts }]);
+  pressButton(n, mode = 'tap') {
+    this.pressButtons([{ button: n, mode }]);
   }
 
   /**
-   * Simulate a sequence of presses. The firmware takes them one at a time from
-   * its own dispatch, so this is the reliable way to enter a PIN - no host-side
-   * delay between digits to get wrong.
+   * Press a sequence. The firmware takes them one at a time from its own
+   * dispatch, so this is the reliable way to enter a PIN - no host-side delay
+   * between digits to get wrong.
    *
    * Works on a PRODUCTION build. This used to write "1#128\n" to the DEBUG
    * console on SEREMU, which a release build does not compile, so every press
    * silently did nothing there. Presses now go through src/okemu_press.cpp,
    * which stage.js wires into touch_sense_loop() on every build.
    *
-   * @param {Array<number|object>} presses button numbers, or pressButton() opts
-   *                                       objects carrying a `button` field
+   * @param {Array<number|{button: number, mode?: string}>} presses
+   *   button numbers (each a tap), or {button, mode} objects
    */
   pressButtons(presses) {
     const buttons = [];
     const ticks = [];
     for (const p of presses) {
-      const { button, hold, ticks: t } = typeof p === 'object' ? p : { button: p };
+      const { button, mode = 'tap' } = typeof p === 'object' ? p : { button: p };
       if (!Number.isInteger(button) || button < 1 || button > 6) {
         throw new RangeError(`button must be 1..6, got ${button}`);
       }
-      if (t !== undefined) {
-        if (!Number.isInteger(t) || t < 1 || t > 0xFFFF) {
-          throw new RangeError(`ticks must be an integer 1..65535, got ${t}`);
-        }
-        buttons.push(button); ticks.push(t);
-        continue;
+      if (!Object.prototype.hasOwnProperty.call(MODE_TICKS, mode)) {
+        throw new RangeError(`mode must be one of ${PRESS_MODES.join(', ')}, got ${mode}`);
       }
-      const tier = hold || 'tap';
-      if (!(tier in HOLD_TICKS)) {
-        throw new RangeError(`hold must be one of ${Object.keys(HOLD_TICKS).join(', ')}, got ${tier}`);
-      }
-      buttons.push(button); ticks.push(HOLD_TICKS[tier]);
+      buttons.push(button);
+      ticks.push(MODE_TICKS[mode]);
     }
 
     // Checked BEFORE queueing, so a line that does not fit presses nothing
@@ -170,23 +148,7 @@ class OnlyKeyEmulator extends EventEmitter {
   /** Presses queued but not yet taken by the firmware; 0 once all are in. */
   pressPending() { return native.pressPending(); }
 
-  /**
-   * A finger on the pad for `ticks` sense rounds, then released - the faithful
-   * emulation, which the firmware SENSES rather than being handed. Slower than
-   * pressButtons() (a round is one 50 ms scheduler period), and for the same
-   * reason exact: the band is the count, not the host's speed.
-   */
-  holdButtonTicks(n, ticks) {
-    if (!Number.isInteger(n) || n < 1 || n > 6) {
-      throw new RangeError(`button must be 1..6, got ${n}`);
-    }
-    native.setButtonTicks(n, ticks);
-  }
-
-  /** Rounds still owed on a counted hold of button n. */
-  buttonTicksLeft(n) { return native.buttonTicksLeft(n); }
-
-  /** Sense rounds the firmware has completed since start. */
+  /** Sense rounds the firmware has completed since start - proof it is running. */
   rounds() { return native.rounds(); }
 
   /**

@@ -47,7 +47,7 @@ function defaultSocketPath() {
  *  restart  {}                            firmware ran CPU_RESTART()
  *  kbdReport{id, data}                    base64, reply to kbdGetReport
  * ---- client -> server ---------------------------------------------------
- *  press        {button, hold, ticks}     hold: tap|hold|long|longest
+ *  press        {button, mode}            mode: tap|press|hold (lib/press-modes.js)
  *  setButton    {button, down}            raw analog pad
  *  writeHid     {iface, data}             base64
  *  kbdSetReport {data}                    base64; HID SET_REPORT 0x0921 on the
