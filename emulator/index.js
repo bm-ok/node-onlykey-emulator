@@ -203,8 +203,21 @@ class OnlyKeyEmulator extends EventEmitter {
   /** Raw analog touch pad state. The HID4 path above is the supported route. */
   setButton(n, down) { native.setButton(n, !!down); }
 
-  /** Wipe flash + EEPROM back to erased (0xFF). */
-  factoryReset() { native.factoryReset(); }
+  /**
+   * Wipe flash + EEPROM back to erased (0xFF), then reboot onto them.
+   *
+   * The wipe alone did nothing visible: the firmware kept running on the
+   * state it had already loaded into RAM, and kept answering INITIALIZED.
+   * okemu_factory_reset() sets a "restart requested" flag that nothing reads,
+   * so the reboot never came. It is raised here instead as the same 'restart'
+   * event the firmware's own CPU_RESTART() produces - the owner (daemon.js)
+   * exits on it, its supervisor respawns it, and setup() then runs against
+   * the erased storage, as a real key would after a wipe and a power cycle.
+   */
+  factoryReset() {
+    native.factoryReset();
+    this.emit('restart');
+  }
 
   stop() {
     if (!this.started) return;
