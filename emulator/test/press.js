@@ -61,8 +61,7 @@ async function drain(label) {
  * 50 ms each). No device needed - this is what a GUI relies on.
  */
 function checkModes() {
-  const { MODE_TICKS, modeForHeldMs } = require('../lib/press-modes');
-  const { bandFor } = require('node-onlykey-lib/device').press;
+  const { MODE_TICKS, modeForHeldMs, bandFor } = require('../lib/press-modes');
   const want = { tap: 'tap', press: 'hold', hold: 'gesture' };   // mode -> lib band
   for (const [mode, band] of Object.entries(want)) {
     const got = bandFor(MODE_TICKS[mode]);
