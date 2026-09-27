@@ -35,7 +35,13 @@
 
 #pragma once
 
-#define OKVHID_PROTOCOL_VERSION 2
+/*
+ * v2: the HELLO frame and the four pipes. v3: OKVHID_FRAME_UNPLUG. Bump it
+ * with every change to this contract - the bridge warns on a mismatch, and
+ * without the bump a new emulator against an old driver had Unplug silently
+ * ignored (the old driver drops frame kinds it does not know).
+ */
+#define OKVHID_PROTOCOL_VERSION 3
 
 /* Largest report on any OnlyKey interface: the raw-HID ones are 64 bytes,
  * the keyboard is 8. One size so both ends can use one buffer. */
@@ -101,16 +107,27 @@ typedef struct _OKVHID_HELLO {
 #define OKVHID_FRAME_MAGIC 0x48564B4FU   /* 'OKVH' little-endian */
 
 /*
- * Who may connect.
+ * Who may connect: SYSTEM and ONE user - the owner of the key.
  *
- * D:(A;;GA;;;AU) - generic all, authenticated users. The driver runs as a
- * service account and the emulator as the logged-in user, so the descriptor
- * has to name someone they have in common; AU is the narrowest that does.
+ * This is the security boundary of the whole design: whoever can open these
+ * pipes can feed reports to a device Windows treats as a security key. It
+ * used to be D:(A;;GA;;;AU), every authenticated user on the machine, because
+ * the driver runs as a service account and cannot know which user is "the
+ * emulator's" by itself.
  *
- * This is the security boundary of the whole design, and it is a wide one:
- * anything running as an authenticated user can feed reports to a device
- * Windows treats as a security key. That is the intended behaviour for an
- * emulator whose entire purpose is to be driven by a test harness, and it is
- * a concrete reason this driver should not be production-signed as it stands.
+ * So the installer tells it. install-driver.ps1 records the SID of the user
+ * signed in to the desktop session under HKLM\SOFTWARE\okvhid\PipeUser, and
+ * each pipe is created with
+ *
+ *     D:P(A;;GA;;;SY)(A;;GA;;;<that SID>)
+ *
+ * P marks the DACL protected, so nothing inherited can widen it. If the value
+ * is missing or is not a valid SID, the pipe FAILS CLOSED: SYSTEM only, the
+ * emulator cannot attach, and the trace and install-driver.ps1 ("denied") say
+ * why. A security key that quietly falls back to "anyone" is worse than one
+ * that visibly refuses.
  */
-#define OKVHID_PIPE_SDDL L"D:(A;;GA;;;AU)"
+#define OKVHID_PIPE_USER_KEY    L"SOFTWARE\\okvhid"
+#define OKVHID_PIPE_USER_VALUE  L"PipeUser"
+#define OKVHID_PIPE_SDDL_FMT    L"D:P(A;;GA;;;SY)(A;;GA;;;%s)"
+#define OKVHID_PIPE_SDDL_CLOSED L"D:P(A;;GA;;;SY)"

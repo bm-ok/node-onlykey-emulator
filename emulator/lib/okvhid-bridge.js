@@ -41,8 +41,9 @@ const path = require('path');
 const IFACES = require('./hid-descriptors').INTERFACES;
 
 /* Must match windows-driver/src/public.h. PROTOCOL_VERSION in the HELLO frame
- * is the only thing that catches a mismatch. */
-const PROTOCOL_VERSION = 2;
+ * is the only thing that catches a mismatch. v3 = FRAME_UNPLUG; an older
+ * driver ignores that frame, so Unplug would silently do nothing. */
+const PROTOCOL_VERSION = 3;
 const PIPE_PREFIX = '\\\\.\\pipe\\okvhid-';
 const FRAME_MAGIC = 0x48564b4f;          /* 'OKVH' little-endian */
 const HEADER_SIZE = 12;

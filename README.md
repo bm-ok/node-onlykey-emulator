@@ -407,7 +407,10 @@ somewhere useless.
 
 Elevation is needed only for the driver (`sign.ps1`, `install-driver.ps1`,
 `hotplug.ps1`) and for the GUI's **Unplug / Plug in**, which raise a UAC
-prompt — see [The GUI](#the-gui). After a Windows restart run
+prompt — see [The GUI](#the-gui). `install-driver.ps1` also records **who owns
+the key**: only the user signed in to the desktop (and SYSTEM) may open the
+driver's pipes, so the emulator must run as that user. See
+`windows-driver\README.md`, "The transport". After a Windows restart run
 `install-driver.ps1` again (the devices do not survive a reboot), and if the
 key was **unplugged** when Windows went down, `hotplug.ps1` too: an unplug can
 leave devices *disabled* ("problem 22"), which persists across the restart.

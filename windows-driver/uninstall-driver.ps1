@@ -73,6 +73,16 @@ if ($oem) {
     Write-Host '    not in the driver store'
 }
 
+# ------------------------------------------------------------ pipe owner
+# install-driver.ps1 recorded who may open the pipes; with the driver gone
+# that record means nothing, and a stale one would name the wrong owner for
+# the next install if -PipeUser were ever skipped. Trace is left alone - it is
+# a debugging switch the user set, not install state.
+if (Get-ItemProperty -Path 'HKLM:\SOFTWARE\okvhid' -Name 'PipeUser' -ErrorAction SilentlyContinue) {
+    Remove-ItemProperty -Path 'HKLM:\SOFTWARE\okvhid' -Name 'PipeUser' -ErrorAction SilentlyContinue
+    Write-Host '    pipe owner record removed'
+}
+
 # ------------------------------------------------------------ certificate
 if ($RemoveTestCertificate) {
     Say 'Removing the test certificate'

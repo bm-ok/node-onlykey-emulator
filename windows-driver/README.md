@@ -196,11 +196,20 @@ hard-coding anything. Frames: HELLO (driver to emulator, once), INPUT
 UNPLUG (emulator to driver, no payload: remove this device - see
 [Unplug and replug](#unplug-and-replug)).
 
-**The pipe ACL is the security boundary of this design, and it is a wide one.**
-`D:(A;;GA;;;AU)` — anything running as an authenticated user can feed reports
-to a device Windows treats as a security key. That is the intended behaviour
-for an emulator whose purpose is to be driven by a test harness, and it is a
-concrete reason this driver should not be production-signed as it stands.
+**The pipe ACL is the security boundary of this design.** Whoever can open
+these pipes can feed reports to a device Windows treats as a security key. It
+used to be `D:(A;;GA;;;AU)` — every authenticated user on the machine — because
+the driver runs as a service account and cannot know which user owns the key.
+
+Now the installer tells it. `install-driver.ps1` records the SID of the user
+signed in to the desktop (not the elevating account; `-PipeUser` overrides)
+under `HKLM\SOFTWARE\okvhid\PipeUser`, and each pipe is created with
+`D:P(A;;GA;;;SY)(A;;GA;;;<SID>)` — SYSTEM and that one user, protected against
+inheritance. **If the value is missing or not a SID, the pipe fails closed**
+to SYSTEM only: the emulator cannot attach, the trace says
+`pipe access: no valid PipeUser - SYSTEM only`, and the install table shows
+`access denied`. Re-run `install-driver.ps1` to fix it. `uninstall-driver.ps1`
+removes the record.
 
 ## Tracing
 
