@@ -15,7 +15,7 @@ module.exports = {
   version: 'v2.1.1',
   pins: { libraries: '0dc7cf0', 'OnlyKey-Firmware': '0fe8d3a' },
   status: 'tested',
-  emulator: { linux: 'untried', win32: 'untried' },   /* node-onlykey-emulator's own ladder */
+  emulator: { linux: 'boots', win32: 'untried' },   /* node-onlykey-emulator's own ladder: linux boots = matrix stage/build/press/compat PASS, VM x64, 2026-09-27 */
 
   notes: [
     'RUNS AND FULLY PASSES: 67 of 67, staged as the STANDARD edition - see the',

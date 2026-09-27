@@ -13,7 +13,7 @@ module.exports = {
   version: 'v3.0.1',
   pins: { libraries: 'a27ffa6', 'OnlyKey-Firmware': 'c3929eb' },
   status: 'tested',
-  emulator: { linux: 'untried', win32: 'untried' },   /* node-onlykey-emulator's own ladder */
+  emulator: { linux: 'boots', win32: 'untried' },   /* node-onlykey-emulator's own ladder: linux boots = matrix stage/build/press/compat PASS, VM x64, 2026-09-27 */
 
   notes: [
     'RUNS AND FULLY PASSES: 67 of 67, with no patches beyond the ones the 3.0',

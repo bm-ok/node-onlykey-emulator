@@ -35,7 +35,7 @@ module.exports = {
   version: 'v2.1.2',
   pins: { libraries: '12eb5b0', 'OnlyKey-Firmware': 'bbb910a' },
   status: 'tested',
-  emulator: { linux: 'untried', win32: 'untried' },   /* node-onlykey-emulator's own ladder */
+  emulator: { linux: 'boots', win32: 'untried' },   /* node-onlykey-emulator's own ladder: linux boots = matrix stage/build/press/compat PASS, VM x64, 2026-09-27 */
 
   notes: [
     'The pin is confirmed correct: upstream tag v2.1.2-prod IS 12eb5b0. The',

@@ -52,7 +52,7 @@ module.exports = {
    * otherwise would put a claim in the matrix that nobody made.
    */
   status: 'boots',
-  emulator: { linux: 'untried', win32: 'untried' },   /* node-onlykey-emulator's own ladder */
+  emulator: { linux: 'boots', win32: 'untried' },   /* node-onlykey-emulator's own ladder: linux boots = matrix stage/build/press/compat PASS, VM x64, 2026-09-27 */
 
   notes: [
     'NAMED BUT NOT CUT. onlykey.h declares 3.0.5 and upstream has a',
