@@ -214,7 +214,22 @@ host happens to keep it — [`build-dummy-hcd.sh`](scripts/build-dummy-hcd.sh)
 tries the kernel build tree (which has the sources on a self-built or mainline
 kernel), then an unpacked tree or a `linux-source-*` tarball under `/usr/src`,
 and failing those reads the single file out of the source tarball in the archive
-pool, stopping the transfer as soon as it has it.
+pool, stopping the transfer as soon as it has it. When none of those exists — a
+Raspberry Pi, whose headers ship no `.c` files and whose archive publishes no
+kernel tarball — it fetches the file from **kernel.org's stable tree at exactly
+this kernel's version** (`6.18.39+rpt-rpi-v8` → `v6.18.39`). Whatever source
+worked is kept in `build/dummy_hcd/src/`, one file per kernel version, so a
+rebuild never downloads again.
+
+So on any distro it is two commands:
+
+```sh
+./scripts/build-dummy-hcd.sh            # no root: find or fetch the source, build
+sudo ./scripts/install-dummy-hcd.sh     # install, load, load at every boot
+```
+
+`install-dummy-hcd.sh` refuses a module built for another kernel, and is what
+`gadget-setup.sh` calls too.
 
 That last route is not a fallback for unusual setups — it is the *normal* one on
 an HWE kernel. Ubuntu publishes `linux-source-<ver>` only for a release's own

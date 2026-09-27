@@ -210,16 +210,59 @@ try_archive() {
   return 1
 }
 
-try_explicit || try_build_tree || try_unpacked || try_source_package || try_archive || true
+# The kernel version as kernel.org names it. `uname -r` carries a distro
+# suffix after the upstream version - 7.0.0-28-generic on Ubuntu, and
+# 6.18.39+rpt-rpi-v8 on Raspberry Pi OS, where UPSTREAM above keeps the "+rpt"
+# (it only cuts at the first "-"). Neither suffix exists upstream.
+KORG_VER="${UPSTREAM%%+*}"
+
+# Every source that worked is kept here, one file per kernel version, so a
+# rebuild - after `make clean`, or on the next boot of a reinstalled checkout -
+# never has to find or download it again. A kernel upgrade changes the version
+# and so misses the cache, which is right: the file must match the kernel.
+CACHE="$BUILD_DIR/src/dummy_hcd-$KORG_VER.c"
+
+try_cache() {
+  [[ -s $CACHE ]] || return 1
+  echo "==> Using the cached source for $KORG_VER: $CACHE"
+  cp "$CACHE" "$DEST"
+}
+
+# Last resort that works on ANY distro: the file straight from the upstream
+# stable tree, at exactly this kernel's version. This is what built the module
+# on a Raspberry Pi (6.18.39+rpt-rpi-v8), whose headers package ships no .c
+# files and whose archive publishes no kernel source tarball. Distro rungs go
+# first because a distro may patch the driver; dummy_hcd is rarely touched, and
+# the module still has to load, which is the real check.
+try_kernel_org() {
+  local url="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/$SRC_PATH?h=v$KORG_VER"
+  echo "==> Fetching dummy_hcd.c from kernel.org (stable, v$KORG_VER)"
+  echo "    $url"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --max-time 60 "$url" -o "$DEST" || { rm -f "$DEST"; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q --timeout=60 -O "$DEST" "$url" || { rm -f "$DEST"; return 1; }
+  else
+    return 1
+  fi
+  # A missing tag answers with an HTML error page, not a 404 curl can see.
+  grep -q 'dummy_hcd' "$DEST" 2>/dev/null || { rm -f "$DEST"; return 1; }
+}
+
+try_explicit || try_cache || try_build_tree || try_unpacked || try_source_package || try_archive || try_kernel_org || true
 
 if [[ ! -s $DEST ]]; then
   rm -f "$DEST"
   echo "ERROR: could not obtain $SRC_PATH for $KREL." >&2
-  echo "       Tried: OKEMU_DUMMY_HCD_SRC, $KBUILD, /usr/src, the archive pool." >&2
+  echo "       Tried: OKEMU_DUMMY_HCD_SRC, the cache, $KBUILD, /usr/src, the archive" >&2
+  echo "       pool, and kernel.org (v$KORG_VER)." >&2
   echo "       Fetch that file from your kernel's source and point at it with:" >&2
   echo "         OKEMU_DUMMY_HCD_SRC=/path/to/dummy_hcd.c $0" >&2
   exit 1
 fi
+
+mkdir -p "$(dirname "$CACHE")"
+[[ -s $CACHE ]] || cp "$DEST" "$CACHE"
 
 printf 'obj-m += dummy_hcd.o\n' > "$BUILD_DIR/Makefile"
 
@@ -228,4 +271,4 @@ make -C "/lib/modules/$KREL/build" M="$BUILD_DIR" modules
 
 echo
 echo "Built: $BUILD_DIR/dummy_hcd.ko"
-echo "Install it with:  sudo ./scripts/setup-permissions.sh"
+echo "Install and load it with:  sudo ./scripts/install-dummy-hcd.sh"

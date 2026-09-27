@@ -75,20 +75,14 @@ teardown() {
 if [[ ${1:-} == --down ]]; then teardown; echo "down."; exit 0; fi
 
 # ---------------------------------------------------------------- modules
-if [[ ! -f $KO ]]; then
-  echo "ERROR: $KO not found. Build it first (no root needed):" >&2
-  echo "       ./scripts/build-dummy-hcd.sh" >&2
-  exit 1
-fi
-
-echo "==> Installing dummy_hcd into /lib/modules/$KREL/updates"
-install -D -m 0644 "$KO" "/lib/modules/$KREL/updates/dummy_hcd.ko"
-depmod -a
+# Installing and loading dummy_hcd is install-dummy-hcd.sh's job - one copy of
+# it, shared with setups (the Raspberry Pi) that want the module without this
+# script binding the gadget to it.
+"$REPO/scripts/install-dummy-hcd.sh" "$KO"
 
 echo "==> Loading modules"
 modprobe libcomposite
 modprobe usb_f_hid 2>/dev/null || true
-modprobe dummy_hcd 2>/dev/null || insmod "/lib/modules/$KREL/updates/dummy_hcd.ko"
 printf 'libcomposite\ndummy_hcd\n' > /etc/modules-load.d/onlykey-gadget.conf
 
 mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config

@@ -5,8 +5,8 @@ Everything in this folder exists for one purpose: making the emulated OnlyKey
 appear on a **physical USB port**, so a *separate* machine — a Windows box, say
 — enumerates it as a genuine OnlyKey and can be used to test the firmware.
 
-That is a different goal from the one the rest of the repo is set up for, and
-the two do not mix. Use one path per machine.
+That is a different goal from the one the rest of the repo is set up for.
+The two can share one Pi - see "Both on one Pi" below.
 
 | | `scripts/` (the default) | `scripts/raspberry_pi/` (this) |
 |---|---|---|
@@ -17,6 +17,34 @@ the two do not mix. Use one path per machine.
 
 Nothing here modifies anything in `scripts/`. The dummy_hcd path still works
 exactly as before, on this machine or any other.
+
+### Both on one Pi: the phone, and the test kit
+
+The two paths used to be one-per-machine. They need not be: load `dummy_hcd`
+**beside** `dwc2` and the gadget can be bound to either controller, switched
+without root and without stopping the emulator (the gadget bridge rides out a
+rebind like an unplug and replug):
+
+```sh
+./scripts/build-dummy-hcd.sh                 # once per kernel; no root
+sudo ./scripts/install-dummy-hcd.sh          # once per kernel; loads at boot
+
+./scripts/raspberry_pi/use-udc.sh real       # the USB-C port: a phone or PC
+./scripts/raspberry_pi/use-udc.sh dummy      # the Pi is the host: /dev/hidraw* here
+./scripts/raspberry_pi/use-udc.sh status
+```
+
+`gadget-setup.sh` here still binds the **real** port at boot (it skips
+`dummy_udc`), so the phone setup is the default. `dummy` is for
+onlykey-testing's CLI section, which runs python-onlykey against
+`/dev/hidraw*` on this machine: stop the daemon first (the kit will not drive a
+gadget the daemon owns), `okt run 02-cli`, then `use-udc.sh real` and start
+the daemon again. Measured on a Pi 4 (6.18.39+rpt-rpi-v8): 02-cli ran 24
+passed, 2 skipped; its one failure was the kit calling `setpqc`, which
+python-onlykey has since deleted in favour of `loadpqc`.
+
+After a kernel upgrade the module no longer loads (it is built for one
+kernel): run the two build/install commands again.
 
 Prerequisites
 -------------
