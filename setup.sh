@@ -325,10 +325,16 @@ npm install
 # needs its own install: the test kit for node-hid and the @noble crypto it
 # verifies against, the OnlyKey App for NW.js, and the web apps for their
 # webpack build.
+#
+# --no-save: these are other people's checkouts, and a plain `npm install`
+# rewrites their tracked package-lock.json (an older lockfile format gets
+# upgraded, for one). That dirty file then blocks the next `git pull` of the
+# component. --no-save still installs what the lock pins; it only stops npm
+# writing package.json and package-lock.json back.
 for pkg in onlykey-testing OnlyKey-App onlykey.github.io; do
   if [ -f "$CHECKOUTS/$pkg/package.json" ]; then
     echo "== installing $pkg"
-    (cd "$CHECKOUTS/$pkg" && npm install)
+    (cd "$CHECKOUTS/$pkg" && npm install --no-save)
   fi
 done
 
