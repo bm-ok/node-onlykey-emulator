@@ -493,6 +493,93 @@ const PATCHES = [
        + '\tsize_t println(long long n, int base)\t\t{ return print((long)n, base) + println(); }'],
     ],
   },
+
+  /*
+   * ---- Ported from ok-rn's base PATCHES for the version matrix ----
+   *
+   * Every pinned release predates libraries@2ec3a12, which moved the host-build
+   * fixes into the firmware behind OK_EMULATOR - so a release needs them from
+   * here. They apply to the working tree too where its lines still exist, and
+   * are correct there: uintptr_t is right on the MK20DX256 as well, where it is
+   * a 32-bit type and nothing changes.
+   */
+  {
+    /*
+     * The address of a local, printed by a stack-depth diagnostic under
+     * #ifdef DEBUG. uint32_t truncates it on any 64-bit host. Both call sites
+     * are the same line, so one edit covers them.
+     */
+    file: 'libraries/onlykey/okcrypto.cpp',
+    edits: [
+      ['Serial.println ((uint32_t)&ret);', 'Serial.println ((uintptr_t)&ret);'],
+    ],
+  },
+  {
+    /*
+     * A CBOR span measured by casting both ends to uint32_t and subtracting.
+     * The subtraction is fine; narrowing the pointers first is not, and on a
+     * 64-bit host it can silently produce a bogus length for a buffer that is
+     * then bounds-checked against it.
+     */
+    file: 'libraries/fido2/ctap_parse.cpp',
+    edits: [
+      ['uint32_t length = (uint32_t)end_byte - (uint32_t)start_byte;',
+       'uint32_t length = (uint32_t)((uintptr_t)end_byte - (uintptr_t)start_byte);'],
+    ],
+  },
+  /*
+   * webcryptcheck() compares against _appid, which extend_fido2() passes as
+   * NULL on the whole CTAP2 route. Releases with a DEBUG early return skip the
+   * comparison on a debug build; one without it dereferences NULL. ok-rn
+   * measured it from a tombstone (memcmp in webcryptcheck, from
+   * ctap_get_assertion). Costs nothing where the early return exists, because
+   * the guard is then unreachable. The working tree no longer has the line -
+   * working-tree.js declares it absent. ok-rn/FINDING-production-firmware-
+   * crashes-in-webcryptcheck.md
+   */
+  {
+    file: 'libraries/fido2/device.cpp',
+    edits: [
+      ['	appid_match2 = memcmp (stored_appid, _appid, 32);',
+       '	appid_match2 = (_appid == NULL) ? 1 : memcmp (stored_appid, _appid, 32);'],
+    ],
+  },
+];
+
+/*
+ * Applied only when the staged tree has the DEBUG gate OFF - every signed
+ * release as shipped, or a working tree built for production. Ported from
+ * ok-rn's DEBUG_OFF_PATCHES; the per-release ones live in each version script.
+ *
+ * webcryptcheck(): with DEBUG on it returns "trust all origins" before any
+ * comparison; with it off, execution reaches the comparisons with the NULL
+ * pointers its callers pass (ctap.cpp's allowList walk; extend_fido2()).
+ * ok-rn/FINDING-production-firmware-crashes-in-webcryptcheck.md
+ */
+const NL = String.fromCharCode(10);
+const DEBUG_OFF_PATCHES = [
+  {
+    file: 'libraries/fido2/device.cpp',
+    edits: [
+      ['    appid_match1 = memcmp (stored_apprpid, rpid, 12);',
+       [
+         '    /* Injected by emulator/scripts/stage.js wherever the DEBUG gate is',
+         '       OFF (ported from ok-rn).',
+         '',
+         '       Callers pass NULL for both of these. ctap.cpp passes',
+         '       webcryptcheck(NULL, NULL); extend_fido2() - the whole CTAP2',
+         '       path - passes NULL as _appid on both branches. The #ifdef DEBUG',
+         '       early return keeps a debug build from dereferencing them on every',
+         '       release that HAS one - see the appid_match2 guard in PATCHES.',
+         '',
+         '       Guarded per COMPARISON rather than by returning early, so every',
+         '       check whose inputs are actually present still runs. The rpid',
+         '       check reads ctap_buffer, not _appid, and is the only one the',
+         '       CTAP2 path can satisfy. */',
+         '    appid_match1 = memcmp (stored_apprpid, rpid, 12);',
+       ].join(NL)],
+    ],
+  },
 ];
 
 /*
@@ -688,33 +775,105 @@ function copyDir(src, dst) {
   }
 }
 
-function applyPatches() {
-  let applied = 0, missing = 0;
-  for (const p of PATCHES) {
+const firstLine = (s) => String(s).split(/\r?\n/)[0].trim();
+
+/**
+ * Apply PATCHES, then the release's own patches (`extra`).
+ *
+ * Ported from ok-rn's stage.js, with the emulator's platform filter kept.
+ * A missed pattern sets a non-zero exit, and `npm run stage && node-gyp ...`
+ * then stops before the compiler runs - a patch that silently fails to apply
+ * is worse than one that errors.
+ *
+ * @param {Array} extra    the release's patches, applied after the base ones
+ * @param {Array} absent   files or patterns the release DECLARES it lacks
+ */
+function applyPatches(extra = [], absent = []) {
+  let applied = 0, missing = 0, expected = 0;
+  const patches = [...PATCHES, ...extra];
+  /*
+   * SOME BASE PATCHES DO NOT APPLY TO EVERY RELEASE, and for an old enough tree
+   * that is a fact about the release rather than a fault (okpqc.cpp exists in
+   * no release at all; the 2019 beta has no factorysectoradr). So a release may
+   * DECLARE a file or pattern absent. Declared-absent is counted and reported -
+   * it is not silence - and one declared absent that turns out to be PRESENT
+   * throws, because the tree would be built unpatched on a stale claim.
+   */
+  const declaredAbsent = new Set(absent);
+  const seen = new Set();
+  for (const p of patches) {
     /*
      * A patch may be scoped to one host platform. Used sparingly - a fix that
      * is correct everywhere should apply everywhere, so the trees do not
      * drift - but some collisions only exist against one libc, and silently
      * changing the Linux build to fix Windows would be worse than the drift.
+     *
+     * Skipped for the platform still counts as LOOKED FOR: a release declares
+     * absent what any platform's patch wants, and the stale-declaration check
+     * below must not fire on Linux over a Windows-only patch.
      */
-    if (p.platform && p.platform !== process.platform) continue;
+    if (p.platform && p.platform !== process.platform) {
+      seen.add(p.file);
+      for (const [from] of p.edits) seen.add(from);
+      continue;
+    }
     const target = path.join(STAGE, p.file);
     if (!fs.existsSync(target)) {
+      if (declaredAbsent.has(p.file)) {
+        console.log(`stage: ${p.file} is absent at this pin, as its release says`);
+        seen.add(p.file);
+        expected++;
+        continue;
+      }
       console.error(`stage: WARNING - patch file absent: ${p.file}`);
       missing++;
       continue;
     }
     let text = fs.readFileSync(target, 'utf8');
     for (const [from, to] of p.edits) {
-      if (!text.includes(from)) {
-        console.error(`stage: WARNING - pattern not found in ${p.file}: ${from}`);
+      /*
+       * A checkout cloned on Windows stages with CRLF while the patterns are
+       * written with LF. Try the pattern as written, then with CRLF line
+       * endings, and keep whichever matches.
+       */
+      const crlf = (s) => s.replace(/\r?\n/g, '\r\n');
+      const from2 = text.includes(from) ? from
+        : text.includes(crlf(from)) ? crlf(from)
+        : null;
+      if (from2 === null) {
+        if (declaredAbsent.has(from)) {
+          seen.add(from);
+          expected++;
+          continue;
+        }
+        console.error(
+          `stage: WARNING - pattern not found in ${p.file}: ${firstLine(from)}` +
+          ' | if this release predates it, list that line in the version ' +
+          "script's `absentPatterns`");
         missing++;
         continue;
       }
-      text = text.split(from).join(to);
+      if (declaredAbsent.has(from)) {
+        throw new Error(
+          `stage: ${p.file} DOES contain a pattern its release declares ` +
+          `absent: ${firstLine(from)} | remove it from absentPatterns - the ` +
+          'tree would be left unpatched on the strength of a stale claim');
+      }
+      text = text.split(from2).join(from2 === from ? to : crlf(to));
       applied++;
     }
     fs.writeFileSync(target, text);
+  }
+  for (const declared of declaredAbsent) {
+    if (!seen.has(declared)) {
+      throw new Error(
+        'stage: this release declares a pattern absent that no patch looks ' +
+        `for: ${firstLine(declared)} | either a typo, or the patch it ` +
+        'belonged to has gone');
+    }
+  }
+  if (expected) {
+    console.log(`stage: ${expected} patch edit(s) absent at this pin, as declared`);
   }
   if (missing) {
     console.error(
@@ -1001,7 +1160,27 @@ function main() {
   const timeRepointed = defuseTimeHeader();
 
   // 6. documented source-level fixups
-  const patched = applyPatches();
+  /*
+   * The release's own patches, and - when the staged tree ships with DEBUG
+   * off, as every signed release does - its debug-off patches: lines that
+   * only exist, or only misbehave, once the console is compiled out.
+   */
+  const onlykeyH = path.join(STAGE_LIB, 'onlykey', 'onlykey.h');
+  const debugOn = fs.existsSync(onlykeyH) &&
+    /^[ \t]*#define[ \t]+DEBUG\b/m.test(fs.readFileSync(onlykeyH, 'utf8'));
+  /*
+   * okpqc.cpp (the post-quantum code) exists in no pinned release - it is
+   * newer than all of them - so the emulator's win32 patch for it is declared
+   * absent for every pinned tree here rather than in nine version scripts. If
+   * a later release does ship it, applyPatches() throws on the stale claim.
+   */
+  const pinnedAbsent = release.pins ? ['libraries/onlykey/okpqc.cpp'] : [];
+  const patched = applyPatches(
+    [...release.patches, ...(debugOn ? [] : [...DEBUG_OFF_PATCHES, ...release.debugOffPatches])],
+    [...release.absentPatterns, ...pinnedAbsent,
+     ...(debugOn ? [] : release.debugOffAbsentPatterns)],
+  );
+  console.log(`stage: DEBUG console ${debugOn ? 'on' : 'off'} in this tree`);
 
   // 7. no fixed addresses: registers into the relocated blocks, then checked
   const registerCounts = rewriteRegisterBlocks();
