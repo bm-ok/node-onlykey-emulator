@@ -1,50 +1,740 @@
 {
-    "v3.0.5":{
-        "libraries":"",
-        "OnlyKey-Firmware":""
-    },
-    "v3.0.4":{
-        "libraries":"c8804e3",
-        "OnlyKey-Firmware":"9600daa",
-        "file": "Signed_OnlyKey_3_0_4_STD"
-    },
-    "v3.0.3":{
-        "libraries":"a133bea",
-        "OnlyKey-Firmware":"9600daa",
-        "file": "Signed_OnlyKey_3_0_3_STD"
-    },
-    "v3.0.2":{
-        "libraries":"5d7ce7a",
-        "OnlyKey-Firmware":"7671d6f",
-        "file": "Signed_OnlyKey_3_0_2_STD"
-    },
-    "v3.0.1":{
-        "libraries":"a27ffa6",
-        "OnlyKey-Firmware":"c3929eb",
-        "file": "Signed_OnlyKey_3_0_1_STD"
-    },
-    "v3.0.0":{
-        "libraries":"5515974",
-        "OnlyKey-Firmware":"dc24867"
-    },
-    "v2.1.2":{
-        "libraries":"12eb5b0",
-        "OnlyKey-Firmware":"bbb910a",
-        "file": "Signed_OnlyKey_2_1_2_STD"
-    },
-    "v2.1.1":{
-        "libraries":"0dc7cf0",
-        "OnlyKey-Firmware":"0fe8d3a",
-        "file": "Signed_OnlyKey_2_1_1_STD"
-    },
-    "v2.1.0":{
-        "libraries":"8687474",
-        "OnlyKey-Firmware":"159c0f2",
-        "file": "Signed_OnlyKey_2_1_0_STD"
-    },
-    "v0.2-beta.8":{
-        "libraries":"307ba86",
-        "OnlyKey-Firmware":"697c4c0",
-        "file": "Signed_OnlyKey_Beta8_STD_Color"
+  "v3.0.5": {
+    "libraries": "",
+    "OnlyKey-Firmware": "",
+    "compatibility": {
+      "status": "UNLOCKEDv3.0.5-prodc",
+      "unreleased": true,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 72,
+            "hi": 180,
+            "ticks": 100
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 72,
+            "hi": null,
+            "ticks": 80
+          }
+        },
+        "okconnectLayout": "modern",
+        "challengeFormula": "modern",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": true,
+        "vendorOrigin": true,
+        "hmacSha1": true,
+        "debugConsole": false,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "preference",
+        "deriveReqPress": false,
+        "transitV2": true,
+        "backupDigest": true,
+        "unknownSlotIsSilent": true,
+        "webDerive": true,
+        "staleFadeGuard": true,
+        "pressModeDefaulted": true,
+        "xwingDeviceCustody": true,
+        "userInputModeEnum": true,
+        "deviceVault": true,
+        "challengeErrorIsFinal": true,
+        "xwingDerive": true,
+        "presenceTest": "keepalive",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 72
+        },
+        "duoSupported": true,
+        "consolePress": false,
+        "buttons": 6
+      }
     }
+  },
+  "v3.0.4": {
+    "libraries": "c8804e3",
+    "OnlyKey-Firmware": "9600daa",
+    "file": "Signed_OnlyKey_3_0_4_STD",
+    "compatibility": {
+      "status": "UNLOCKEDv3.0.4-prodc",
+      "unreleased": false,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 72,
+            "hi": 180,
+            "ticks": 100
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 72,
+            "hi": null,
+            "ticks": 80
+          }
+        },
+        "okconnectLayout": "modern",
+        "challengeFormula": "modern",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": false,
+        "vendorOrigin": true,
+        "hmacSha1": true,
+        "debugConsole": false,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "broken",
+        "deriveReqPress": true,
+        "transitV2": false,
+        "backupDigest": true,
+        "unknownSlotIsSilent": true,
+        "webDerive": true,
+        "staleFadeGuard": true,
+        "pressModeDefaulted": true,
+        "xwingDeviceCustody": false,
+        "userInputModeEnum": false,
+        "deviceVault": false,
+        "challengeErrorIsFinal": false,
+        "xwingDerive": false,
+        "presenceTest": "keepalive",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 72
+        },
+        "duoSupported": true,
+        "consolePress": false,
+        "buttons": 6
+      }
+    }
+  },
+  "v3.0.3": {
+    "libraries": "a133bea",
+    "OnlyKey-Firmware": "9600daa",
+    "file": "Signed_OnlyKey_3_0_3_STD",
+    "compatibility": {
+      "status": "UNLOCKEDv3.0.3-prodc",
+      "unreleased": false,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 72,
+            "hi": 180,
+            "ticks": 100
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 72,
+            "hi": null,
+            "ticks": 80
+          }
+        },
+        "okconnectLayout": "modern",
+        "challengeFormula": "modern",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": false,
+        "vendorOrigin": true,
+        "hmacSha1": true,
+        "debugConsole": false,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "broken",
+        "deriveReqPress": true,
+        "transitV2": false,
+        "backupDigest": true,
+        "unknownSlotIsSilent": true,
+        "webDerive": true,
+        "staleFadeGuard": true,
+        "pressModeDefaulted": true,
+        "xwingDeviceCustody": false,
+        "userInputModeEnum": false,
+        "deviceVault": false,
+        "challengeErrorIsFinal": false,
+        "xwingDerive": false,
+        "presenceTest": "keepalive",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 72
+        },
+        "duoSupported": true,
+        "consolePress": false,
+        "buttons": 6
+      }
+    }
+  },
+  "v3.0.2": {
+    "libraries": "5d7ce7a",
+    "OnlyKey-Firmware": "7671d6f",
+    "file": "Signed_OnlyKey_3_0_2_STD",
+    "compatibility": {
+      "status": "UNLOCKEDv3.0.2-prodc",
+      "unreleased": false,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 72,
+            "hi": 180,
+            "ticks": 100
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 72,
+            "hi": null,
+            "ticks": 80
+          }
+        },
+        "okconnectLayout": "modern",
+        "challengeFormula": "modern",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": false,
+        "vendorOrigin": true,
+        "hmacSha1": true,
+        "debugConsole": false,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "broken",
+        "deriveReqPress": true,
+        "transitV2": false,
+        "backupDigest": true,
+        "unknownSlotIsSilent": true,
+        "webDerive": true,
+        "staleFadeGuard": true,
+        "pressModeDefaulted": true,
+        "xwingDeviceCustody": false,
+        "userInputModeEnum": false,
+        "deviceVault": false,
+        "challengeErrorIsFinal": false,
+        "xwingDerive": false,
+        "presenceTest": "keepalive",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 72
+        },
+        "duoSupported": true,
+        "consolePress": false,
+        "buttons": 6
+      }
+    }
+  },
+  "v3.0.1": {
+    "libraries": "a27ffa6",
+    "OnlyKey-Firmware": "c3929eb",
+    "file": "Signed_OnlyKey_3_0_1_STD",
+    "compatibility": {
+      "status": "UNLOCKEDv3.0.1-prodc",
+      "unreleased": false,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 72,
+            "hi": 180,
+            "ticks": 100
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 72,
+            "hi": null,
+            "ticks": 80
+          }
+        },
+        "okconnectLayout": "modern",
+        "challengeFormula": "modern",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": false,
+        "vendorOrigin": true,
+        "hmacSha1": true,
+        "debugConsole": false,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "always",
+        "deriveReqPress": true,
+        "transitV2": false,
+        "backupDigest": true,
+        "unknownSlotIsSilent": true,
+        "webDerive": true,
+        "staleFadeGuard": true,
+        "pressModeDefaulted": false,
+        "xwingDeviceCustody": false,
+        "userInputModeEnum": false,
+        "deviceVault": false,
+        "challengeErrorIsFinal": false,
+        "xwingDerive": false,
+        "presenceTest": "keepalive",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 72
+        },
+        "duoSupported": true,
+        "consolePress": false,
+        "buttons": 6
+      }
+    }
+  },
+  "v3.0.0": {
+    "libraries": "5515974",
+    "OnlyKey-Firmware": "dc24867",
+    "compatibility": {
+      "status": "UNLOCKEDv3.0.0-prodc",
+      "unreleased": false,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 72,
+            "hi": 180,
+            "ticks": 100
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 72,
+            "hi": null,
+            "ticks": 80
+          }
+        },
+        "okconnectLayout": "modern",
+        "challengeFormula": "modern",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": false,
+        "vendorOrigin": true,
+        "hmacSha1": true,
+        "debugConsole": false,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "always",
+        "deriveReqPress": true,
+        "transitV2": false,
+        "backupDigest": true,
+        "unknownSlotIsSilent": true,
+        "webDerive": true,
+        "staleFadeGuard": true,
+        "pressModeDefaulted": false,
+        "xwingDeviceCustody": false,
+        "userInputModeEnum": false,
+        "deviceVault": false,
+        "challengeErrorIsFinal": false,
+        "xwingDerive": false,
+        "presenceTest": "keepalive",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 72
+        },
+        "duoSupported": true,
+        "consolePress": false,
+        "buttons": 6
+      }
+    }
+  },
+  "v2.1.2": {
+    "libraries": "12eb5b0",
+    "OnlyKey-Firmware": "bbb910a",
+    "file": "Signed_OnlyKey_2_1_2_STD",
+    "compatibility": {
+      "status": "UNLOCKEDv2.1.2-prodc",
+      "unreleased": false,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 72,
+            "hi": null,
+            "ticks": 80
+          }
+        },
+        "okconnectLayout": "modern",
+        "challengeFormula": "modern",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": false,
+        "vendorOrigin": true,
+        "hmacSha1": false,
+        "debugConsole": false,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "always",
+        "deriveReqPress": true,
+        "transitV2": false,
+        "backupDigest": true,
+        "unknownSlotIsSilent": true,
+        "webDerive": true,
+        "staleFadeGuard": true,
+        "pressModeDefaulted": false,
+        "xwingDeviceCustody": false,
+        "userInputModeEnum": false,
+        "deviceVault": false,
+        "challengeErrorIsFinal": false,
+        "xwingDerive": false,
+        "presenceTest": "blocking",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 72
+        },
+        "duoSupported": false,
+        "consolePress": false,
+        "buttons": 6
+      }
+    }
+  },
+  "v2.1.1": {
+    "libraries": "0dc7cf0",
+    "OnlyKey-Firmware": "0fe8d3a",
+    "file": "Signed_OnlyKey_2_1_1_STD",
+    "compatibility": {
+      "status": "UNLOCKEDv2.1.1-prodc",
+      "unreleased": false,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 72,
+            "hi": null,
+            "ticks": 80
+          }
+        },
+        "okconnectLayout": "modern",
+        "challengeFormula": "modern",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": false,
+        "vendorOrigin": true,
+        "hmacSha1": false,
+        "debugConsole": false,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "always",
+        "deriveReqPress": true,
+        "transitV2": false,
+        "backupDigest": false,
+        "unknownSlotIsSilent": true,
+        "webDerive": true,
+        "staleFadeGuard": true,
+        "pressModeDefaulted": false,
+        "xwingDeviceCustody": false,
+        "userInputModeEnum": false,
+        "deviceVault": false,
+        "challengeErrorIsFinal": false,
+        "xwingDerive": false,
+        "presenceTest": "blocking",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 72
+        },
+        "duoSupported": false,
+        "consolePress": false,
+        "buttons": 6
+      }
+    }
+  },
+  "v2.1.0": {
+    "libraries": "8687474",
+    "OnlyKey-Firmware": "159c0f2",
+    "file": "Signed_OnlyKey_2_1_0_STD",
+    "compatibility": {
+      "status": "UNLOCKEDv2.1.0-prodc",
+      "unreleased": false,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 72,
+            "hi": null,
+            "ticks": 100
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 72,
+            "hi": null,
+            "ticks": 80
+          }
+        },
+        "okconnectLayout": "modern",
+        "challengeFormula": "modern",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": false,
+        "vendorOrigin": true,
+        "hmacSha1": false,
+        "debugConsole": false,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "always",
+        "deriveReqPress": true,
+        "transitV2": false,
+        "backupDigest": false,
+        "unknownSlotIsSilent": true,
+        "webDerive": true,
+        "staleFadeGuard": true,
+        "pressModeDefaulted": false,
+        "xwingDeviceCustody": false,
+        "userInputModeEnum": false,
+        "deviceVault": false,
+        "challengeErrorIsFinal": false,
+        "xwingDerive": false,
+        "presenceTest": "blocking",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 72
+        },
+        "duoSupported": false,
+        "consolePress": false,
+        "buttons": 6
+      }
+    }
+  },
+  "v0.2-beta.8": {
+    "libraries": "307ba86",
+    "OnlyKey-Firmware": "697c4c0",
+    "file": "Signed_OnlyKey_Beta8_STD_Color",
+    "compatibility": {
+      "status": "UNLOCKEDv0.2-beta.8c",
+      "unreleased": false,
+      "capabilities": {
+        "gestures": {
+          "backup": {
+            "button": 1,
+            "lo": 90,
+            "hi": null,
+            "ticks": 102
+          },
+          "slotLabels": {
+            "button": 2,
+            "lo": 90,
+            "hi": null,
+            "ticks": 102
+          },
+          "keyLabels": {
+            "button": 2,
+            "lo": 140,
+            "hi": null,
+            "ticks": 150
+          },
+          "lock": {
+            "button": 3,
+            "lo": 90,
+            "hi": null,
+            "ticks": 102
+          },
+          "configMode": {
+            "button": 6,
+            "lo": 90,
+            "hi": null,
+            "ticks": 98
+          }
+        },
+        "okconnectLayout": "legacy",
+        "challengeFormula": "legacy",
+        "pollDelayMultiplier": 1,
+        "firmwareUpdateOverUsb": true,
+        "postQuantum": false,
+        "vendorOrigin": true,
+        "hmacSha1": false,
+        "debugConsole": null,
+        "slots": 12,
+        "profiles": 2,
+        "touchFreeDerive": "always",
+        "deriveReqPress": true,
+        "transitV2": false,
+        "backupDigest": false,
+        "unknownSlotIsSilent": false,
+        "webDerive": false,
+        "staleFadeGuard": false,
+        "pressModeDefaulted": false,
+        "xwingDeviceCustody": false,
+        "userInputModeEnum": false,
+        "deviceVault": false,
+        "challengeErrorIsFinal": false,
+        "xwingDerive": false,
+        "presenceTest": "blocking",
+        "configModeGesture": {
+          "button": 6,
+          "ticks": 90
+        },
+        "duoSupported": false,
+        "consolePress": false,
+        "buttons": 6
+      }
+    }
+  }
 }

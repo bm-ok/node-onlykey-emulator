@@ -193,10 +193,16 @@ function pinsFor(version) {
    * the other floating would produce a build that is neither the release nor
    * the tree, and no note would say which half moved.
    */
+  /*
+   * Only the REPOS are pins. `file` names the signed image and
+   * `compatibility` is what the release supports (scripts/versions/_compat.js,
+   * generated from node-onlykey-lib) - metadata about the row, not commits.
+   */
+  const META = new Set(['file', 'compatibility']);
   const blank = Object.keys(pins).filter(
-    (k) => k !== 'file' && String(pins[k] ?? '').trim() === '');
+    (k) => !META.has(k) && String(pins[k] ?? '').trim() === '');
   const filled = Object.keys(pins).filter(
-    (k) => k !== 'file' && String(pins[k] ?? '').trim() !== '');
+    (k) => !META.has(k) && String(pins[k] ?? '').trim() !== '');
   if (blank.length && filled.length) {
     throw new Error(
       `${version} in ok-versions.json pins ${filled.join(', ')} but leaves ` +
