@@ -365,7 +365,8 @@ const PATCHES = [
   {
     file: 'libraries/onlykey/okcore.cpp',
     edits: [
-      ['\tif ((key_press > 0) && (key_off > 2)) {',
+      [['\tif ((key_press > 0) && (key_off > 2)) {',
+        '    if ((key_press > 0) && (key_off > 2)) {'],   // 3.1.0: four spaces
        '\t/* Injected by emulator/scripts/stage.js - see src/okemu_press.h.\n' +
        '\t   Hands over a queued press when the loop is not already holding\n' +
        '\t   one; does nothing when nothing is queued. */\n' +
@@ -509,7 +510,9 @@ const PATCHES = [
      */
     file: 'libraries/onlykey/okcrypto.cpp',
     edits: [
-      ['Serial.println ((uint32_t)&ret);', 'Serial.println ((uintptr_t)&ret);'],
+      [['Serial.println ((uint32_t)&ret);',
+        'Serial.println((uint32_t)&ret);'],   // 3.1.0: no space before the paren
+       'Serial.println ((uintptr_t)&ret);'],
     ],
   },
   {
@@ -1004,16 +1007,29 @@ function applyPatches(extra = [], absent = []) {
       continue;
     }
     let text = fs.readFileSync(target, 'utf8');
-    for (const [from, to] of p.edits) {
+    for (const [fromSpec, to] of p.edits) {
       /*
        * A checkout cloned on Windows stages with CRLF while the patterns are
        * written with LF. Try the pattern as written, then with CRLF line
        * endings, and keep whichever matches.
+       *
+       * `from` may also be a LIST of spellings of the same line, tried in
+       * order. Release 3.1.0 re-indented and re-spaced the sources (a tab
+       * became four spaces in touch_sense_loop(), "Serial.println ((" became
+       * "Serial.println((") and the exact-text patterns stopped matching,
+       * while every older release still spells them the old way. A list keeps
+       * each spelling exact - a loose whitespace match could land a patch
+       * somewhere it was never meant to go - and the FIRST spelling names the
+       * edit, for absentPatterns and the warnings.
        */
       const crlf = (s) => s.replace(/\r?\n/g, '\r\n');
-      const from2 = text.includes(from) ? from
-        : text.includes(crlf(from)) ? crlf(from)
-        : null;
+      const froms = Array.isArray(fromSpec) ? fromSpec : [fromSpec];
+      const from = froms[0];
+      let from2 = null;
+      for (const cand of froms) {
+        if (text.includes(cand)) { from2 = cand; break; }
+        if (text.includes(crlf(cand))) { from2 = crlf(cand); break; }
+      }
       if (from2 === null) {
         if (declaredAbsent.has(from)) {
           seen.add(from);
@@ -1033,7 +1049,7 @@ function applyPatches(extra = [], absent = []) {
           `absent: ${firstLine(from)} | remove it from absentPatterns - the ` +
           'tree would be left unpatched on the strength of a stale claim');
       }
-      text = text.split(from2).join(from2 === from ? to : crlf(to));
+      text = text.split(from2).join(from2.includes('\r\n') ? crlf(to) : to);
       applied++;
     }
     writeFileRetrying(target, text);
