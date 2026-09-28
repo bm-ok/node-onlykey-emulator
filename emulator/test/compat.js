@@ -20,7 +20,7 @@
  * A DEBUG build of a release is not compared against the row: the lib reads
  * '-test' as the development tree, so it would legitimately claim more than the
  * signed release (that is why releases stage with DEBUG off). The working tree
- * is the 3.0.5 compatibility feature tree and is checked against the v3.0.5 row.
+ * is the newest tree and is checked against the table's newest row (v3.1.0 now).
  *
  * Same teardown note as test/press.js: exits without emu.stop().
  */
@@ -48,8 +48,14 @@ const OKCONNECT = 0xE4;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const build = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.stage', 'build.json'), 'utf8'));
-/* The working tree IS the compatibility feature tree - its row is v3.0.5. */
-const rowName = build.version === versions.WORKING_TREE ? 'v3.0.5' : build.version;
+/*
+ * The working tree is the NEWEST tree, so its row is the newest release in the
+ * library's table - list()[0]. This was hard-wired to 'v3.0.5', and the day the
+ * checkouts moved to 3.1.0 (2026-09-28: bm-ok masters = release-3.1.0 + the
+ * CTAPHID wipe fix) a key reporting v3.1.0 failed against the 3.0.5 row. Taking
+ * it from the table follows each release without an edit here.
+ */
+const rowName = build.version === versions.WORKING_TREE ? libVersions.list()[0] : build.version;
 /* The row travels with the library's pin: the same commit's capabilities()
  * generated it (node-onlykey-lib scripts/versions-compat.js). */
 const row = { compatibility: libVersions.compatibilityOf(rowName) };

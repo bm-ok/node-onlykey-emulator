@@ -63,7 +63,7 @@ module.exports = {
   /* 'untried' again, deliberately: the 2026-09-27 'boots' was the working tree
    * as it then was (libraries b412e78, DEBUG on). Pinned, this builds a SIGNED
    * release from 57340df / 1f7e726 - not yet measured. The matrix sets it. */
-  emulator: { linux: 'untried', win32: 'untried' },   /* node-onlykey-emulator's own ladder */
+  emulator: { linux: 'boots', win32: 'untried' },   /* node-onlykey-emulator's own ladder: linux boots = matrix stage/build/press/compat PASS on the SIGNED build, VM x64, 2026-09-28 */
 
   notes: [
     'NEVER RELEASED - the 3.0.5 compatibility tree, pinned 2026-09-28 to',
