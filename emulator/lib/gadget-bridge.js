@@ -55,6 +55,28 @@ const OPEN_FLAGS = fs.constants.O_RDWR | fs.constants.O_NONBLOCK;
  * without bound if the host stops polling entirely. */
 const MAX_TX_QUEUE = 4096;
 
+/*
+ * How long an endpoint may stay full before the host counts as NOT READING it.
+ *
+ * The queue above is bounded, but bounding it was not enough. With nothing on
+ * the host side reading an interface - the debug console (SEREMU) whenever no
+ * monitor is attached, which on a Linux bench is most of the time - the queue
+ * sits at whatever the boot banner left in it, and _drain() retried the head
+ * every millisecond for ever: a thrown EAGAIN a thousand times a second.
+ * Measured 2026-09-28 on the VM: RSS grew ~1.2 MB/s with NO new reports, the
+ * Pi's daemon died with "JavaScript heap out of memory" four times in forty
+ * minutes, and --no-hid (no bridge, no retry loop) held flat at 51 MB.
+ *
+ * A real key does not retry for ever either. Teensy's USB stack waits a short
+ * time for the host to take a packet and then gives up on that endpoint,
+ * dropping further output immediately until the host reads again. This does
+ * the same. The window is far longer than any host that IS reading ever takes
+ * - the post-PIN debug burst that once outran the host (see send()) drains in
+ * milliseconds - so a slow reader loses nothing; only a host that is not
+ * there does.
+ */
+const STALL_DROP_MS = 250;
+
 class GadgetDevice {
   constructor(spec, onOutput) {
     this.spec = spec;
@@ -66,6 +88,10 @@ class GadgetDevice {
     this.draining = false;
     this.retryPending = false;
     this.txDropped = 0;
+    /* When the endpoint first refused a write (0 = not stalled), and whether
+     * the host has been judged absent - see STALL_DROP_MS. */
+    this.stalledSince = 0;
+    this.hostAbsent = false;
   }
 
   start() {
@@ -120,6 +146,21 @@ class GadgetDevice {
   send(data) {
     if (this.fd === null) return;
     /*
+     * With no host reading this interface, offer the report once and drop it
+     * if it still does not fit - no queue, no retry. The first report that is
+     * taken means someone is reading again, and normal queueing resumes.
+     */
+    if (this.hostAbsent) {
+      try {
+        fs.writeSync(this.fd, data);
+        this.hostAbsent = false;
+      } catch (err) {
+        if (err.code !== 'EAGAIN') throw err;
+        this.txDropped++;
+      }
+      return;
+    }
+    /*
      * Bounded, so a device left talking to nobody cannot grow this forever.
      * Dropping the OLDEST keeps the most recent output, which is what anyone
      * reading the console actually wants.
@@ -148,9 +189,21 @@ class GadgetDevice {
       try {
         fs.writeSync(this.fd, this.txQueue[0]);
         this.txQueue.shift();
+        this.stalledSince = 0;
       } catch (err) {
         if (err.code === 'EAGAIN') {
-          /* Endpoint queue full - let the host drain it and come back. */
+          /* Endpoint queue full - let the host drain it and come back, unless
+           * it has been full so long that nobody is reading (STALL_DROP_MS). */
+          const now = Date.now();
+          if (!this.stalledSince) this.stalledSince = now;
+          if (now - this.stalledSince > STALL_DROP_MS) {
+            this.txDropped += this.txQueue.length;
+            this.txQueue.length = 0;
+            this.stalledSince = 0;
+            this.hostAbsent = true;
+            this.draining = false;
+            return;
+          }
           this.draining = false;
           this.retryPending = true;
           setTimeout(() => { this.retryPending = false; this._drain(); }, 1);
@@ -176,6 +229,8 @@ class GadgetDevice {
     this.txQueue.length = 0;
     this.draining = false;
     this.retryPending = false;
+    this.stalledSince = 0;
+    this.hostAbsent = false;
     try { fs.closeSync(fd); } catch { /* going away anyway */ }
   }
 }
