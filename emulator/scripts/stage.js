@@ -694,15 +694,23 @@ function rmrf(p) { fs.rmSync(p, { recursive: true, force: true }); }
  * key claims postQuantum and xwingDerive, which the real v3.0.4 does not have.
  *
  *     (unset)              a pinned release: OFF, as it was signed
- *                          the working tree: as its source has it
+ *                          the working tree: ON - it is the development build
  *     OKEMU_PRODUCTION=1   force it OFF, the way the firmware ships
  *     OKEMU_DEBUG=1        force it ON (the DEBUG console, e.g. to watch
  *                          presses); the device then reports "-test"
+ *
+ * The working tree used to follow its source, which had DEBUG on until
+ * release 3.1.0 shipped it OFF (2026-09-28, when the checkouts moved to the
+ * bm-ok masters = release-3.1.0 + the CTAPHID wipe fix). The working tree is
+ * what pm2, the emulator UI and the test kit run, and the kit drives presses
+ * and reads challenge digits through the DEBUG console - so following the
+ * source would have left every default build unable to be tested. A signed
+ * build of the tree is OKEMU_PRODUCTION=1; a signed RELEASE is its pinned row.
  */
 function wantDebug(release) {
   if (process.env.OKEMU_DEBUG === '1') return true;
   if (process.env.OKEMU_PRODUCTION === '1') return false;
-  return release.pins ? false : null;
+  return !release.pins;
 }
 
 /**
