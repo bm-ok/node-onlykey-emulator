@@ -25,17 +25,15 @@
 'use strict';
 
 /*
- * press.js BY FILE, not through `node-onlykey-lib/device`. That subpath loads
- * the lib's whole device namespace, some of which needs @noble/* - installed
- * in the lib's own node_modules on one host and not on another (the Pi), so
- * the emulator failed to start there over a table it does not need crypto
- * for. press.js itself has no dependencies. The lib's exports map has no
- * `./device/press` subpath yet; resolving its entry point and walking to the
- * file keeps this working with any lib checkout until that export exists.
+ * `node-onlykey-lib/device/press`, NOT `node-onlykey-lib/device`. The whole
+ * device namespace needs @noble/* - installed in the lib's own node_modules on
+ * one host and not on another (the Pi) - and the emulator failed to start
+ * there over a table it needs no crypto for. The press subpath is press.js
+ * alone, no dependencies. (Before the lib exported it, this walked from the
+ * entry point to src/device/press.js - reaching past the exports map, which
+ * no GUI may do.)
  */
-const path = require('path');
-const { PRESS_TICKS, GESTURES, bandFor } = require(
-  path.join(path.dirname(require.resolve('node-onlykey-lib')), 'device', 'press.js'));
+const { PRESS_TICKS, GESTURES, bandFor } = require('node-onlykey-lib/device/press');
 
 const MODE_TICKS = Object.freeze({
   tap: PRESS_TICKS.TAP,

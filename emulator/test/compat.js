@@ -14,7 +14,7 @@
  *      stage that quietly built the wrong tree, or the wrong side of the DEBUG
  *      gate, fails here rather than in whatever a GUI later assumes;
  *   2. for a production build, node-onlykey-lib's capabilities() of that LIVE
- *      reply equal the release's `compatibility` row in ok-versions.json, flag
+ *      reply equal the release's `compatibility` row in node-onlykey-lib/versions, flag
  *      by flag - which is how ok-rn and every GUI decide what a key can do.
  *
  * A DEBUG build of a release is not compared against the row: the lib reads
@@ -31,10 +31,18 @@ const os = require('os');
 const path = require('path');
 const emu = require('..');
 const versions = require('../scripts/versions');
-const { flat } = require('../scripts/versions/_compat');
+const libVersion = require('node-onlykey-lib/device/version');
+const libVersions = require('node-onlykey-lib/versions');
 
-const libVersion = require(path.join(
-  path.dirname(require.resolve('node-onlykey-lib')), 'device', 'version.js'));
+/** Flatten nested objects to dotted keys, so a diff names the exact flag. */
+function flat(obj, prefix = '', out = {}) {
+  for (const [k, v] of Object.entries(obj || {})) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === 'object' && !Array.isArray(v)) flat(v, key, out);
+    else out[key] = v;
+  }
+  return out;
+}
 
 const OKCONNECT = 0xE4;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -42,8 +50,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const build = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.stage', 'build.json'), 'utf8'));
 /* The working tree IS the compatibility feature tree - its row is v3.0.5. */
 const rowName = build.version === versions.WORKING_TREE ? 'v3.0.5' : build.version;
-const table = JSON.parse(fs.readFileSync(versions.PIN_FILE, 'utf8'));
-const row = table[rowName];
+/* The row travels with the library's pin: the same commit's capabilities()
+ * generated it (node-onlykey-lib scripts/versions-compat.js). */
+const row = { compatibility: libVersions.compatibilityOf(rowName) };
 
 const storageDir = process.argv[2] ||
   fs.mkdtempSync(path.join(os.tmpdir(), 'okemu-compat-'));
@@ -61,7 +70,7 @@ function fail(msg) {
 
 (async () => {
   console.log(`built: ${build.version} (DEBUG ${build.debug ? 'on' : 'off'}); row: ${rowName}`);
-  if (!row || !row.compatibility) fail(`no compatibility row for ${rowName} - run scripts/versions/_compat.js --write`);
+  if (!row || !row.compatibility) fail(`no compatibility row for ${rowName} in node-onlykey-lib/versions`);
 
   emu.start({ storageDir });
   await sleep(3000);

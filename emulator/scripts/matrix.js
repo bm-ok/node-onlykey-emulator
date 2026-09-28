@@ -14,7 +14,7 @@
  *             exactly the lesson ok-rn's matrix learned (a swap must rebuild)
  *   press     test/press.js - presses reach the firmware; a PIN sets
  *   compat    test/compat.js - the key reports the release that was built,
- *             and reads as its compatibility row in ok-versions.json
+ *             and reads as its compatibility row in node-onlykey-lib/versions
  *
  * The daemon is stopped for the run (on Windows the loaded addon is a locked
  * DLL, and anywhere it would keep running the old build) and the WORKING TREE

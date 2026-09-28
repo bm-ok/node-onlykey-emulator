@@ -6,7 +6,7 @@
  *
  * stage.js is the ENGINE - the patches every version needs, the flash rebase,
  * the system-block rewrite. What differs release to release lives in
- * `scripts/versions/<version>.js`, one file per entry in ok-versions.json, and
+ * `scripts/versions/<version>.js`, one file per release in node-onlykey-lib/versions, and
  * this module loads it.
  *
  * ## Why per-version files rather than one table
@@ -21,7 +21,7 @@
  * ## What a version script exports
  *
  *   version   must equal the filename, so a copied file cannot lie about itself
- *   pins      optional; cross-checked against ok-versions.json and NOT trusted
+ *   pins      optional; cross-checked against the library's pins and NOT trusted
  *             over it. Present so that editing the pin list fails loudly here
  *             instead of quietly invalidating everything measured below.
  *   status    how far this release has been taken - see STATUS
@@ -103,22 +103,23 @@ const HERE = __dirname;
 const APP = path.resolve(HERE, '..', '..', '..');
 const ROOT = path.resolve(APP, '..');
 
-/**
- * The pins, preferring the copy inside this repo.
+/*
+ * THE PINS ARE node-onlykey-lib's: `node-onlykey-lib/versions` owns the
+ * release table (ok-versions.json - the pinned commits, the signed image, a
+ * compatibility row per release), and this emulator, ok-rn and the test kit
+ * all read that one copy.
  *
- * They started life at the checkouts root, beside the firmware checkouts
- * they name commits in. That put a file this app depends on outside the
- * only tree that is version-controlled with it: clone ok-rn alone and the
- * matrix cannot say what v3.0.2 even means.
+ * It used to live here, a copy of ok-rn's plus the compatibility rows, and
+ * copies drift: this matrix already caught one host (the Pi) reading a
+ * release differently because ITS copy of the library was older. A table in
+ * the library moves with the library's pin, so the pins, the capabilities()
+ * they are checked against and the rows recording them always come from the
+ * same commit.
  *
- * So `ok-rn/ok-versions.json` wins when it exists, and the root copy stays
- * as the fallback for a working tree that still has one there. Which was
- * read is not a detail to guess at, so `PIN_FILE` is exported and the
- * errors below name it.
+ * What stays here is this build system's own: the per-release stage scripts
+ * (patches for node-gyp and clang-cl) and the emulator's status ladder.
  */
-const APP_PIN_FILE = path.join(APP, 'ok-versions.json');
-const ROOT_PIN_FILE = path.join(ROOT, 'ok-versions.json');
-const PIN_FILE = fs.existsSync(APP_PIN_FILE) ? APP_PIN_FILE : ROOT_PIN_FILE;
+const libVersions = require('node-onlykey-lib/versions');
 
 /**
  * How far a release has been taken, weakest first.
@@ -157,61 +158,18 @@ function list() {
 }
 
 /**
- * The pinned commits for one release, from ok-versions.json.
+ * The pinned commits for one release, from node-onlykey-lib/versions.
  *
  * Null for the working tree, which is pinned to nothing - it is whatever the
- * checkouts are at.
+ * checkouts are at - and null for a release that is NAMED but not CUT (a row
+ * with both commits blank; v3.0.5 today), so it builds what the checkouts
+ * hold, which is what that version currently IS. The library throws on an
+ * unknown release and on a half-pinned row: one repo pinned and the other
+ * floating would be neither the release nor the tree.
  */
 function pinsFor(version) {
   if (version === WORKING_TREE) return null;
-  if (!fs.existsSync(PIN_FILE)) {
-    throw new Error(`OKEMU_VERSION=${version} but ${PIN_FILE} does not exist`);
-  }
-  const all = JSON.parse(fs.readFileSync(PIN_FILE, 'utf8'));
-  const pins = all[version];
-  if (!pins) {
-    throw new Error(
-      `OKEMU_VERSION=${version} is not in ok-versions.json; known: ` +
-      Object.keys(all).join(', '),
-    );
-  }
-  /*
-   * A ROW WITH BLANK HASHES MEANS "THE WORKING TREE", and returns exactly what
-   * the working tree returns, so nothing downstream needs a second idea of
-   * what unpinned means: writeBuildInfo() already reads `release.pins` to
-   * choose between the pinned shas and gitShort() of the checkouts, and
-   * `unreleased: !release.pins` already flags it as ahead of every release.
-   *
-   * It is for a version that has been NAMED but not CUT. v3.0.5 is the case
-   * this was added for: onlykey.h declares 3/0/5, upstream has a release
-   * branch for it, and there is no tag to pin to yet. Naming it now means the
-   * row is already there to fill in on release day, and until then
-   * OKEMU_VERSION=v3.0.5 builds what the checkouts hold - which is what that
-   * version currently IS.
-   *
-   * Partly filled is a mistake rather than a third mode: one repo pinned and
-   * the other floating would produce a build that is neither the release nor
-   * the tree, and no note would say which half moved.
-   */
-  /*
-   * Only the REPOS are pins. `file` names the signed image and
-   * `compatibility` is what the release supports (scripts/versions/_compat.js,
-   * generated from node-onlykey-lib) - metadata about the row, not commits.
-   */
-  const META = new Set(['file', 'compatibility']);
-  const blank = Object.keys(pins).filter(
-    (k) => !META.has(k) && String(pins[k] ?? '').trim() === '');
-  const filled = Object.keys(pins).filter(
-    (k) => !META.has(k) && String(pins[k] ?? '').trim() !== '');
-  if (blank.length && filled.length) {
-    throw new Error(
-      `${version} in ok-versions.json pins ${filled.join(', ')} but leaves ` +
-      `${blank.join(', ')} blank. Blank means "the working tree", so a row ` +
-      'has to be all pinned or all blank - otherwise the build is half a ' +
-      'release and nothing records which half.');
-  }
-  if (blank.length) return null;
-  return pins;
+  return libVersions.pinsFor(version);
 }
 
 /**
@@ -267,8 +225,8 @@ function load(version) {
   const pins = pinsFor(version);
 
   /*
-   * The script may restate the pins it was written against. ok-versions.json
-   * stays the source of truth; this only catches the two drifting apart, which
+   * The script may restate the pins it was written against. The library's
+   * table stays the source of truth; this only catches the two drifting apart, which
    * would otherwise invalidate every note in the file without changing a line
    * of it.
    */
@@ -277,7 +235,7 @@ function load(version) {
       if (mod.pins[repo] !== pins[repo]) {
         throw new Error(
           `${version}.js was written against ${repo}@${mod.pins[repo]}, but ` +
-          `ok-versions.json now pins ${repo}@${pins[repo]}. Re-measure this ` +
+          `node-onlykey-lib/versions now pins ${repo}@${pins[repo]}. Re-measure this ` +
           `release, then update the script - its notes describe the old commit.`,
         );
       }
@@ -361,5 +319,5 @@ function load(version) {
 }
 
 module.exports = {
-  list, load, pinsFor, STATUS, PIN_FILE, WORKING_TREE, EMULATOR_PLATFORMS, EMULATOR_PLATFORM,
+  list, load, pinsFor, STATUS, WORKING_TREE, EMULATOR_PLATFORMS, EMULATOR_PLATFORM,
 };

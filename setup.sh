@@ -240,7 +240,7 @@ for entry in "${absent[@]}"; do
   fi
 
   # The version matrix (emulator/scripts/matrix.js) builds signed releases from
-  # the commits ok-versions.json pins, and every pin is an UPSTREAM release tag.
+  # the commits node-onlykey-lib/versions pins, and every pin is an UPSTREAM release tag.
   # The bm-ok forks mirror master only, and some releases were cut from other
   # branches - v2.1.2's libraries commit is on remove-touchsense - so a fresh
   # fork clone cannot stage them. Fetch trustcrypto's tags into what we just
@@ -252,25 +252,6 @@ for entry in "${absent[@]}"; do
         echo "   warning: could not fetch trustcrypto tags into $dir - older releases may not stage" >&2
       ;;
   esac
-done
-
-# A checkout that was already there is used as it is (see above), so it is only
-# CHECKED for the pinned release commits, and told how to get any it lacks.
-for repo in libraries OnlyKey-Firmware; do
-  [ -d "$CHECKOUTS/$repo/.git" ] || continue
-  missing=$(node -e '
-    const pins = require(process.argv[1]);
-    const want = new Set(Object.values(pins).map((r) => r[process.argv[2]]).filter(Boolean));
-    console.log([...want].join(" "));' "$ROOT/ok-versions.json" "$repo" 2>/dev/null |
-    tr " " "\n" | while read -r sha; do
-      [ -n "$sha" ] && ! git -C "$CHECKOUTS/$repo" cat-file -e "$sha^{commit}" 2>/dev/null && echo "$sha"
-    done | tr "\n" " ")
-  if [ -n "$missing" ]; then
-    echo "== $repo lacks pinned release commit(s): $missing" >&2
-    echo "   the version matrix cannot stage those releases until it has them:" >&2
-    echo "     git -C \"$CHECKOUTS/$repo\" remote add trustcrypto https://github.com/trustcrypto/$repo" >&2
-    echo "     git -C \"$CHECKOUTS/$repo\" fetch --tags trustcrypto" >&2
-  fi
 done
 
 # --- Python venv ------------------------------------------------------------
@@ -352,6 +333,29 @@ cd "$ROOT/emulator"
 # Skip it, then drive the real build through rebuild (stage -> configure ->
 # build); plain `build` would skip configure and find no Makefile.
 npm install --ignore-scripts
+
+# A checkout that was already there is used as it is (see above), so it is only
+# CHECKED for the pinned release commits, and told how to get any it lacks.
+# The pins are node-onlykey-lib's (node-onlykey-lib/versions - one release
+# table for every GUI), so this runs once the emulator's npm install has put
+# the pinned library in emulator/node_modules.
+for repo in libraries OnlyKey-Firmware; do
+  [ -d "$CHECKOUTS/$repo/.git" ] || continue
+  missing=$(node -e '
+    const v = require("node-onlykey-lib/versions");
+    const want = new Set(v.list().map((r) => (v.pinsFor(r) || {})[process.argv[1]]).filter(Boolean));
+    console.log([...want].join(" "));' "$repo" 2>/dev/null |
+    tr " " "\n" | while read -r sha; do
+      [ -n "$sha" ] && ! git -C "$CHECKOUTS/$repo" cat-file -e "$sha^{commit}" 2>/dev/null && echo "$sha"
+    done | tr "\n" " ")
+  if [ -n "$missing" ]; then
+    echo "== $repo lacks pinned release commit(s): $missing" >&2
+    echo "   the version matrix cannot stage those releases until it has them:" >&2
+    echo "     git -C \"$CHECKOUTS/$repo\" remote add trustcrypto https://github.com/trustcrypto/$repo" >&2
+    echo "     git -C \"$CHECKOUTS/$repo\" fetch --tags trustcrypto" >&2
+  fi
+done
+
 npm run rebuild
 
 echo "== installing the GUI"

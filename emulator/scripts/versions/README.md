@@ -1,7 +1,7 @@
 # One stage script per firmware release
 
 `stage.js` is the engine. What differs between releases lives here, one file
-per entry in `ok-versions.json`:
+per release in `node-onlykey-lib/versions` (the library owns the table):
 
 ```bash
 node scripts/stage.js --list          # what OKEMU_VERSION accepts, and its status
