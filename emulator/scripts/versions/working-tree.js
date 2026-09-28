@@ -31,10 +31,14 @@ module.exports = {
   status: 'tested',
   emulator: { linux: 'tested', win32: 'tested' },   /* node-onlykey-emulator's own ladder */
   slot: '',
+  /* The tree has onlykey/okpqc.cpp (the post-quantum code) - see stage.js
+   * pinnedAbsent. Spread into v3.0.5 and v3.1.0, which are pinned AND have it. */
+  hasOkpqc: true,
 
   notes: [
     'Whatever the checkouts are at. The full e2e suite runs against this.',
-    'Ships with the DEBUG gate ON, unlike every release.',
+    'Since 2026-09-28 the checkouts are 3.1.0 (bm-ok masters), which ships',
+    'DEBUG off; before that the tree shipped DEBUG on.',
   ].join('\n'),
 
   /**

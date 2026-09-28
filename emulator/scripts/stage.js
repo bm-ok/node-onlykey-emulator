@@ -443,9 +443,11 @@ const PATCHES = [
        * to the other eight. Each declaration has to match the linkage of the
        * definition it names, and these are the two that are C.
        */
-      ['extern int      large_buffer_offset;',
+      [['extern int      large_buffer_offset;',
+        'extern int large_buffer_offset;'],    // 3.1.0: single spaces
        'extern "C" int  large_buffer_offset;   /* C linkage: see stage.js */'],
-      ['extern uint8_t  CRYPTO_AUTH;',
+      [['extern uint8_t  CRYPTO_AUTH;',
+        'extern uint8_t CRYPTO_AUTH;'],        // 3.1.0: single spaces
        'extern "C" uint8_t CRYPTO_AUTH;        /* C linkage: see stage.js */'],
     ],
   },
@@ -475,7 +477,8 @@ const PATCHES = [
     platform: 'win32',
     file: 'sketch/OnlyKey.ino',
     edits: [
-      ['  int _write(){return -1;}',
+      [['  int _write(){return -1;}',
+        'int _write() { return -1; }'],        // 3.1.0: no indent, spaced
        '  int okemu_unused_write(){return -1;}  /* renamed: see stage.js */'],
     ],
   },
@@ -1376,12 +1379,14 @@ function main() {
   const debugOn = gateDebug(wantDebug(release));
   gateKeylayouts(debugOn);
   /*
-   * okpqc.cpp (the post-quantum code) exists in no pinned release - it is
-   * newer than all of them - so the emulator's win32 patch for it is declared
-   * absent for every pinned tree here rather than in nine version scripts. If
-   * a later release does ship it, applyPatches() throws on the stale claim.
+   * okpqc.cpp (the post-quantum code) is newer than every release up to
+   * v3.0.4, so for those pinned trees the emulator's win32 patch for it is
+   * declared absent here rather than in nine version scripts. The trees that
+   * DO ship it - v3.0.5 and v3.1.0, pinned from 2026-09-28 - say so with
+   * `hasOkpqc` (the working-tree script, which both spread); without that the
+   * claim went stale and applyPatches() threw on it, as it is meant to.
    */
-  const pinnedAbsent = release.pins ? ['libraries/onlykey/okpqc.cpp'] : [];
+  const pinnedAbsent = release.pins && !release.hasOkpqc ? ['libraries/onlykey/okpqc.cpp'] : [];
   const patched = applyPatches(
     [...release.patches, ...(debugOn ? [] : [...DEBUG_OFF_PATCHES, ...release.debugOffPatches])],
     [...release.absentPatterns, ...pinnedAbsent,

@@ -289,6 +289,9 @@ function load(version) {
      * gate ends up off, which is exactly when its patches are.
      */
     debugOffAbsentPatterns: mod.debugOffAbsentPatterns || [],
+    /* Whether the tree ships onlykey/okpqc.cpp - v3.0.5 and later do; stage.js
+     * declares it absent for pinned trees that do not. */
+    hasOkpqc: mod.hasOkpqc === true,
     /**
      * Build options this release must be staged with to be comparable, when
      * its pinned commit does not have them set.

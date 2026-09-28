@@ -45,22 +45,33 @@ const workingTree = require('./working-tree');
 module.exports = {
   ...workingTree,
   version: 'v3.0.5',
+  /*
+   * PINNED 2026-09-28 (node-onlykey-lib/versions): never released, it is the
+   * "3.0.5 compatibility tree" the kit, ok-rn and this emulator were built
+   * against - 0c-coder's masters. A blank row built whatever was checked out,
+   * which stopped being 3.0.5 the day the working tree moved to 3.1.0.
+   */
+  pins: { libraries: '57340df', 'OnlyKey-Firmware': '1f7e726' },
 
   /*
-   * Not 'tested' yet. It is the same sources the working tree runs, and those
-   * pass, but this entry has not been swept UNDER THIS NAME and saying
-   * otherwise would put a claim in the matrix that nobody made.
+   * Its own storage slot now: it no longer IS the working tree, so sharing the
+   * working tree's emulated flash would carry 3.1.0 state into a 3.0.5 run.
    */
+  slot: 'v3.0.5',
+
   status: 'boots',
-  emulator: { linux: 'boots', win32: 'boots' },   /* node-onlykey-emulator's own ladder: boots = matrix stage/build/press/compat PASS - linux (VM x64) and win32, 2026-09-27 */
+  /* 'untried' again, deliberately: the 2026-09-27 'boots' was the working tree
+   * as it then was (libraries b412e78, DEBUG on). Pinned, this builds a SIGNED
+   * release from 57340df / 1f7e726 - not yet measured. The matrix sets it. */
+  emulator: { linux: 'untried', win32: 'untried' },   /* node-onlykey-emulator's own ladder */
 
   notes: [
-    'NAMED BUT NOT CUT. onlykey.h declares 3.0.5 and upstream has a',
-    'release/v3.0.5 branch, but neither repo has a v3.0.5 tag, so the pins in',
-    'ok-versions.json are blank and this builds the working tree.',
+    'NEVER RELEASED - the 3.0.5 compatibility tree, pinned 2026-09-28 to',
+    '0c-coder\'s masters (libraries 57340df, OnlyKey-Firmware 1f7e726). It',
+    'reports v3.0.5 and carries the CTAPHID wipe fix; the 3.1.0 candidate',
+    'that followed it (v3.1.0.js) does not.',
     '',
-    'Identical to working-tree by construction - same patches, same storage',
-    'slot - so it is not a second thing to keep in step while it is blank.',
+    'Same patch set as working-tree (spread), its own storage slot.',
     '',
     'On release day: fill in both hashes, then give this file its own',
     'measured patch list instead of the spread.',
