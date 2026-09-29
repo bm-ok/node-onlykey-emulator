@@ -45,6 +45,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECKOUTS="$(cd "$ROOT/.." && pwd)"
 VENV="$CHECKOUTS/okpqc-venv"
 
+# setup-windows.ps1 reads AGE_VERSION and the COMPONENTS list below out of this
+# file, so both platforms share one list: keep each on its one-line form.
 AGE_VERSION="v1.2.1"
 
 usage() {
@@ -422,8 +424,8 @@ done
 # and does not declare it - it is a ~150MB download that the kit deliberately
 # does not carry. OnlyKey-App's `nw` dependency does not satisfy it: that is
 # the plain 0.114.0 build, not the SDK, and only the SDK has the devtools
-# protocol the kit drives the window with. (Windows: see README, "On Windows
-# instead" - this script is Linux-only.)
+# protocol the kit drives the window with. (Windows: setup-windows.ps1 - this
+# script is Linux-only.)
 #
 # --no-save because onlykey-testing is a component checkout, not ours to edit -
 # this populates node_modules and leaves its package.json alone. It runs AFTER

@@ -382,24 +382,33 @@ npm run rebuild
 
 Steps 1 and 2 above are Linux-only: `setup.sh` and `setup-permissions.sh` are
 shell scripts, and there is no `/dev/uhid` and no configfs to grant access to.
-Windows needs the driver instead, and the equivalent sequence is:
+Windows has `setup-windows.ps1`, the same flow with the okvhid driver in place
+of the device-access step. From Git Bash (a stock machine's execution policy
+refuses every `.ps1`, hence `Bypass`):
+
+```sh
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./setup-windows.ps1 -Check   # report only, changes nothing
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./setup-windows.ps1 -Clone   # do it
+```
+
+It checks the prerequisites (git, Node >= 22.12, npm, Python >= 3.10, Visual
+Studio's *C++ Clang tools*, pm2), clones missing components from `setup.sh`'s
+own list, fills `okpqc-venv` (with the Windows `age` build), builds the addon,
+installs the Node trees and, last, the kit's NW SDK. Every step skips itself
+when its result is already there, so it is safe to re-run. `-NoDriver` skips
+the driver.
+
+It never elevates. It fetches the WDK and builds the driver (no admin needed),
+then **prints** the elevated steps, which are:
 
 ```powershell
-# 1. sources - clone the components setup.sh would have fetched, into onlykey/
-#    (or copy an existing checkout; nothing here is Windows-specific)
-
-# 2. the driver, once. Elevated. See windows-driver\README.md for detail.
-cd windows-driver
-.\fetch-wdk.ps1                     # WDK from NuGet, no admin
-.\build-direct.ps1                  # clang-cl + lld-link
+cd windows-driver                   # see windows-driver\README.md
 .\sign.ps1 -Mode Test               # elevated
 .\install-driver.ps1                # elevated - re-run after every reboot
-
-# 3. the addon
-cd ..\emulator
-npm install
-npm run rebuild
 ```
+
+It does not start pm2 either, and it does not build the web app's `docs/`
+(`BUILD.sh` does not run under cmd.exe, so Windows uses the committed build).
 
 Then run it **under pm2, exactly as on Linux** — not `node bin/daemon.js` on
 its own. The daemon exits on every firmware restart, factory reset and rebuild
@@ -432,17 +441,14 @@ firmware uses GCC `__attribute__` syntax in ~170 places, so MSVC cannot
 compile it and clang-cl can.
 
 The test kit (`onlykey-testing`) runs its App section on Windows too, against
-this emulator over okvhid; section `04-app` passes 29/0/0 there. It needs two
-things `setup.sh` would have done on Linux:
+this emulator over okvhid; section `04-app` passes 29/0/0 there.
+`setup-windows.ps1` installs what it needs (the kit's NW SDK, OnlyKey-App's
+own nw runtime). To run it:
 
 ```powershell
 cd <checkouts>\onlykey-testing
-npm install --no-save nw@0.114.0-sdk   # the kit drives the App with the SDK build (devtools)
-cd ..\OnlyKey-App
-npm install                            # its own nw 0.114 runtime and gulp
-
 pm2 stop onlykey-emulator              # the kit raises its OWN device on the okvhid pipes
-node ..\onlykey-testing\bin\okt.js run 04-app
+node bin\okt.js run 04-app
 pm2 start onlykey-emulator
 ```
 
