@@ -399,10 +399,20 @@ npm install
 # upgraded, for one). That dirty file then blocks the next `git pull` of the
 # component. --no-save still installs what the lock pins; it only stops npm
 # writing package.json and package-lock.json back.
+#
+# EACH IS NON-FATAL. Under set -e one component that would not install ended
+# the whole setup - measured on a Raspberry Pi 4 (arm64, 2026-09-29), where
+# OnlyKey-App's `nw` dependency 404s: NW.js publishes no Linux arm64 build. A
+# component that cannot install there is one that cannot run there either, so
+# it is named and setup carries on; the emulator and the kit's headless
+# sections do not depend on it.
 for pkg in onlykey-testing OnlyKey-App onlykey.github.io; do
   if [ -f "$CHECKOUTS/$pkg/package.json" ]; then
     echo "== installing $pkg"
-    (cd "$CHECKOUTS/$pkg" && npm install --no-save)
+    if ! (cd "$CHECKOUTS/$pkg" && npm install --no-save); then
+      echo "!! $pkg did not install - continuing without it." >&2
+      echo "   Retry in $CHECKOUTS/$pkg:  npm install --no-save" >&2
+    fi
   fi
 done
 
@@ -420,7 +430,10 @@ done
 # unsaved package straight back out.
 NW_PKG="nw@0.114.0-sdk"
 NW_DIR="$CHECKOUTS/onlykey-testing/node_modules/nw/nwjs-sdk-v0.114.0-linux-x64/nw"
-if [ -f "$CHECKOUTS/onlykey-testing/package.json" ] && [ ! -x "$NW_DIR" ]; then
+if [ "$(uname -s)-$(uname -m)" != "Linux-x86_64" ]; then
+  # The kit's SDK is linux-x64 only, and NW.js has no Linux arm64 build at all.
+  echo "== skipping $NW_PKG: no build for $(uname -s) $(uname -m) - sections 3 and 4 skip themselves here"
+elif [ -f "$CHECKOUTS/onlykey-testing/package.json" ] && [ ! -x "$NW_DIR" ]; then
   echo "== installing $NW_PKG for onlykey-testing (~150MB, sections 3 and 4)"
   if ! (cd "$CHECKOUTS/onlykey-testing" && npm install --no-save "$NW_PKG"); then
     echo "!! nw.js install failed - sections 3 and 4 will skip themselves." >&2
