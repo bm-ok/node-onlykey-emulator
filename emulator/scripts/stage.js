@@ -1390,7 +1390,7 @@ function main() {
    * okpqc.cpp (the post-quantum code) is newer than every release up to
    * v3.0.4, so for those pinned trees the emulator's win32 patch for it is
    * declared absent here rather than in nine version scripts. The trees that
-   * DO ship it - v3.0.5 and v3.1.0, pinned from 2026-09-28 - say so with
+   * DO ship it - v3.1.0, pinned from 2026-09-28 (v3.0.5 was dropped 2026-09-29) - say so with
    * `hasOkpqc` (the working-tree script, which both spread); without that the
    * claim went stale and applyPatches() threw on it, as it is meant to.
    */
