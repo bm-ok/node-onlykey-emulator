@@ -383,12 +383,17 @@ npm run rebuild
 Steps 1 and 2 above are Linux-only: `setup.sh` and `setup-permissions.sh` are
 shell scripts, and there is no `/dev/uhid` and no configfs to grant access to.
 Windows has `setup-windows.ps1`, the same flow with the okvhid driver in place
-of the device-access step. From Git Bash (a stock machine's execution policy
-refuses every `.ps1`, hence `Bypass`):
+of the device-access step. Run it from Git Bash, **inside this repo** (a stock
+machine's execution policy refuses every `.ps1`, hence `Bypass`). Pick ONE:
 
 ```sh
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./setup-windows.ps1 -Check   # report only, changes nothing
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./setup-windows.ps1 -Clone   # do it
+cd node-onlykey-emulator    # the -File path is relative to where you are
+
+# see what is missing - changes nothing, safe any time:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./setup-windows.ps1 -Check
+
+# set up a fresh machine (clones what is missing, installs, builds):
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./setup-windows.ps1 -Clone
 ```
 
 It checks the prerequisites (git, Node >= 22.12, npm, Python >= 3.10, Visual
