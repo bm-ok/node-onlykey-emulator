@@ -11,7 +11,7 @@
 #       arduino-1.6.5-r5-teensy_127/
 #       libraries/
 #       OnlyKey-Firmware/
-#       onlykey.github.io/
+#       apps.onlykey.io/
 #       lib-agent/
 #       python-onlykey/
 #       onlykey-testing/
@@ -186,7 +186,7 @@ COMPONENTS=(
   "arduino-1.6.5-r5-teensy_127 https://github.com/bm-ok/arduino-1.6.5-r5-teensy_127"
   "libraries                   https://github.com/bm-ok/0c-coder-libraries"
   "OnlyKey-Firmware            https://github.com/bm-ok/OnlyKey-Firmware"
-  "onlykey.github.io           https://github.com/bm-ok/0c-coder-onlykey.github.io"
+  "apps.onlykey.io             https://github.com/bm-ok/0c-coder-onlykey.github.io"
   "lib-agent                   https://github.com/bm-ok/0c-coder-lib-agent"
   "python-onlykey              https://github.com/bm-ok/0c-coder-python-onlykey"
   "onlykey-testing             https://github.com/bm-ok/onlykey-testing"
@@ -406,7 +406,7 @@ npm install
 # component that cannot install there is one that cannot run there either, so
 # it is named and setup carries on; the emulator and the kit's headless
 # sections do not depend on it.
-for pkg in onlykey-testing OnlyKey-App onlykey.github.io; do
+for pkg in onlykey-testing OnlyKey-App apps.onlykey.io; do
   if [ -f "$CHECKOUTS/$pkg/package.json" ]; then
     echo "== installing $pkg"
     if ! (cd "$CHECKOUTS/$pkg" && npm install --no-save); then

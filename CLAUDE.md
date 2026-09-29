@@ -46,7 +46,7 @@ cd ../onlykey-testing && node bin/okt.js caps
 | `../OnlyKey-Firmware/` | the firmware sources |
 | `../libraries/` | OnlyKey's vendored Arduino libraries |
 | `../arduino-1.6.5-r5-teensy_127/` | Teensyduino toolchain (Docker; only gates building a device `.hex`) |
-| `../onlykey.github.io/` | the WEB app + the `onlykey-fido2` device library |
+| `../apps.onlykey.io/` | the WEB app (4.0.0, bm-ok/0c-coder-onlykey.github.io main) - its device code IS node-onlykey-lib |
 | `../OnlyKey-App/` | the packaged nw.js desktop APP |
 | `../python-onlykey/` | `onlykey-cli`, `age-plugin-onlykey` |
 | `../lib-agent/` | the agent framework (`onlykey-agent`, `onlykey-gpg`) |
@@ -55,7 +55,7 @@ cd ../onlykey-testing && node bin/okt.js caps
 
 ## Things that will mislead you
 
-**Two different things are called "the app".** `onlykey.github.io` is the web
+**Two different things are called "the app".** `apps.onlykey.io` is the web
 app (test section 3, driven by `lib/gui.js`, reaches the device over the
 WebAuthn tunnel). `OnlyKey-App` is the packaged nw.js app (test section 4,
 driven by `lib/app.js`, reaches it via `chrome.hid`). They share nothing but

@@ -52,7 +52,7 @@ share one folder:
   arduino-1.6.5-r5-teensy_127/    Teensyduino toolchain
   libraries/                      OnlyKey's vendored Arduino libraries
   OnlyKey-Firmware/               the firmware sources
-  onlykey.github.io/              the web apps
+  apps.onlykey.io/                the web app (4.0.0, on node-onlykey-lib)
   lib-agent/                      the agent framework
   python-onlykey/                 onlykey-cli, age-plugin-onlykey
   onlykey-testing/                the test kit
@@ -183,7 +183,7 @@ Re-running is safe: existing checkouts and a working venv are left alone (a venv
 that failed partway, with no pip, is rebuilt).
 
 Three of those checkouts also get `npm install`, because the test kit loads
-modules out of them: `onlykey-testing` itself, `onlykey.github.io` (whose dev
+modules out of them: `onlykey-testing` itself, `apps.onlykey.io` (whose dev
 server on port 3000 is what the kit's browser tier opens) and `OnlyKey-App`.
 A checkout without `node_modules` fails at `require()` time, which reads as a
 missing feature rather than a missing install.
