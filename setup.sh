@@ -366,7 +366,13 @@ for repo in libraries OnlyKey-Firmware; do
     const want = new Set(v.list().map((r) => (v.pinsFor(r) || {})[process.argv[1]]).filter(Boolean));
     console.log([...want].join(" "));' "$repo" 2>/dev/null |
     tr " " "\n" | while read -r sha; do
-      [ -n "$sha" ] && ! git -C "$CHECKOUTS/$repo" cat-file -e "$sha^{commit}" 2>/dev/null && echo "$sha"
+      # if/then, not a && chain: a chain whose test is false (the commit IS
+      # present - the good case) returns 1, the loop returns it, and under
+      # set -euo pipefail the assignment then ended setup silently, right
+      # after the npm install (measured on a fresh Pi workspace, 2026-09-29).
+      if [ -n "$sha" ] && ! git -C "$CHECKOUTS/$repo" cat-file -e "$sha^{commit}" 2>/dev/null; then
+        echo "$sha"
+      fi
     done | tr "\n" " ")
   if [ -n "$missing" ]; then
     echo "== $repo lacks pinned release commit(s): $missing" >&2
