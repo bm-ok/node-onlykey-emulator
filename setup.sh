@@ -421,8 +421,9 @@ done
 # The kit looks for exactly nwjs-sdk-v0.114.0-linux-x64 in its OWN node_modules
 # and does not declare it - it is a ~150MB download that the kit deliberately
 # does not carry. OnlyKey-App's `nw` dependency does not satisfy it: that is
-# ^0.71.1 and the plain build, not the 0.114.0 SDK, and only the SDK has the
-# devtools protocol the kit drives the window with.
+# the plain 0.114.0 build, not the SDK, and only the SDK has the devtools
+# protocol the kit drives the window with. (Windows: see README, "On Windows
+# instead" - this script is Linux-only.)
 #
 # --no-save because onlykey-testing is a component checkout, not ours to edit -
 # this populates node_modules and leaves its package.json alone. It runs AFTER

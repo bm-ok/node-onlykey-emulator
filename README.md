@@ -431,6 +431,25 @@ Requires Visual Studio's *C++ Clang tools for Windows* component — the
 firmware uses GCC `__attribute__` syntax in ~170 places, so MSVC cannot
 compile it and clang-cl can.
 
+The test kit (`onlykey-testing`) runs its App section on Windows too, against
+this emulator over okvhid; section `04-app` passes 29/0/0 there. It needs two
+things `setup.sh` would have done on Linux:
+
+```powershell
+cd <checkouts>\onlykey-testing
+npm install --no-save nw@0.114.0-sdk   # the kit drives the App with the SDK build (devtools)
+cd ..\OnlyKey-App
+npm install                            # its own nw 0.114 runtime and gulp
+
+pm2 stop onlykey-emulator              # the kit raises its OWN device on the okvhid pipes
+node ..\onlykey-testing\bin\okt.js run 04-app
+pm2 start onlykey-emulator
+```
+
+If pm2's emulator is still connected, the kit refuses and names the process.
+One device on the pipes at a time, as with the USB gadget on Linux. Run it from
+an interactive desktop session: the App opens a window.
+
 ---
 
 ## Running
