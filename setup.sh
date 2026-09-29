@@ -49,7 +49,7 @@ AGE_VERSION="v1.2.1"
 
 usage() {
   cat <<EOF
-usage: ./setup.sh [--clone] [--no-privileged]
+usage: ./setup.sh [--clone] [--no-privileged] [--no-toolchain]
 
   --clone   clone any missing component repos into $CHECKOUTS,
             beside this one. Without it, missing components are named
@@ -61,15 +61,23 @@ usage: ./setup.sh [--clone] [--no-privileged]
             which is the only part that needs sudo. Everything else
             still runs; the emulator will build but will have no device
             node, so onlykey-testing's device sections all skip.
+
+  --no-toolchain
+            skip the firmware toolchain image (docker, linux/amd64). It is
+            only for building a .hex for real hardware; the emulator and
+            the test kit do not use it. On an arm64 host it builds under
+            qemu emulation, which is slow and can fail.
 EOF
 }
 
 CLONE_MISSING=0
 DO_PRIVILEGED=1
+DO_TOOLCHAIN=1
 for arg in "$@"; do
   case "$arg" in
     --clone)          CLONE_MISSING=1 ;;
     --no-privileged)  DO_PRIVILEGED=0 ;;
+    --no-toolchain)   DO_TOOLCHAIN=0 ;;
     -h|--help) usage; exit 0 ;;
     *)         echo "!! unknown argument: $arg" >&2; echo >&2; usage >&2; exit 1 ;;
   esac
@@ -308,7 +316,15 @@ fi
 # then produces an image that cannot execute them. DOCKER_DEFAULT_PLATFORM is a
 # no-op on x86_64 and routes through qemu-user-static's binfmt handler elsewhere
 # - correct but slow. `make docker-build` needs the same variable set.
-if ! command -v docker >/dev/null 2>&1; then
+#
+# NOT FATAL. This script runs under set -e, and a toolchain image that failed to
+# build used to abort the whole setup before the emulator was even built -
+# measured on a Raspberry Pi 4 (2026-09-29), where the amd64 image's apt-get
+# failed under qemu 30 minutes in and left a workspace with no emulator. An
+# optional component now warns and the setup carries on.
+if [ "$DO_TOOLCHAIN" = 0 ]; then
+  echo "== skipping the firmware toolchain image (--no-toolchain)"
+elif ! command -v docker >/dev/null 2>&1; then
   echo "!! docker not found - skipping the firmware toolchain image."
   echo "   The emulator still builds; you just cannot produce a device .hex."
 elif [ "$(uname -m)" != "x86_64" ] && [ ! -e /proc/sys/fs/binfmt_misc/qemu-x86_64 ]; then
@@ -317,8 +333,12 @@ elif [ "$(uname -m)" != "x86_64" ] && [ ! -e /proc/sys/fs/binfmt_misc/qemu-x86_6
   echo "   The emulator still builds; you just cannot produce a device .hex."
 else
   echo "== building the firmware toolchain image (linux/amd64)"
-  DOCKER_DEFAULT_PLATFORM=linux/amd64 \
-    make -C "$CHECKOUTS/arduino-1.6.5-r5-teensy_127" docker-build-toolchain
+  if ! DOCKER_DEFAULT_PLATFORM=linux/amd64 \
+      make -C "$CHECKOUTS/arduino-1.6.5-r5-teensy_127" docker-build-toolchain; then
+    echo "!! the firmware toolchain image did not build - continuing without it."
+    echo "   The emulator still builds; you just cannot produce a device .hex. Retry:"
+    echo "   DOCKER_DEFAULT_PLATFORM=linux/amd64 make -C $CHECKOUTS/arduino-1.6.5-r5-teensy_127 docker-build-toolchain"
+  fi
 fi
 
 # --- node -------------------------------------------------------------------
