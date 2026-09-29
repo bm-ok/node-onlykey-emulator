@@ -18,6 +18,6 @@
   "dependencies": {
     "node-addon-api": "^8.9.1",
     "node-gyp": "^13.0.1",
-    "node-onlykey-lib": "github:bmatusiak/node-onlykey-lib#489636b3c8a41907271b75d46ead39947f840795"
+    "node-onlykey-lib": "github:bmatusiak/node-onlykey-lib#3dfbfd0a972c510eed78483fffdd9494aeade433"
   }
 }
