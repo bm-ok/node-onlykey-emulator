@@ -88,6 +88,8 @@ walk(STAGE_CORE, false, sources);
 for (const d of LIB_DIRS) walk(path.join(LIB, d), false, sources);
 /* the PQC monoliths live one level down */
 walk(path.join(LIB, 'onlykey', 'utility'), false, sources);
+/* soft-key firmware plugins (scripts/stage.js, OKEMU_PLUGINS) - only there in a plugin build */
+walk(path.join(LIB, 'onlykey', 'plugins'), true, sources);
 
 /* 4. Arduino Time library (firmware calls now()) */
 walk(path.join(LIB, 'Time'), false, sources);  /* staged: see stage.js defuseTimeHeader() */

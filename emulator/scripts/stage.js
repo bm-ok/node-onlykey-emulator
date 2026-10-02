@@ -816,6 +816,18 @@ function gateKeylayouts(debugOn) {
  * its own script in scripts/versions/.
  */
 const versions = require('./versions');
+/*
+ * SOFT-KEY FIRMWARE PLUGINS (owner, 2026-10-01): experimental firmware
+ * features, each in its own folder, staged in only when asked for -
+ *   OKEMU_PLUGINS=hello OKEMU_PLUGINS_DIR=<a plugins folder> npm run rebuild
+ * The folder can be anywhere (ok-rn keeps its plugins in
+ * ok-rn/android/okemu/plugins/), and nothing here depends on ok-rn: with
+ * neither variable set this is the emulator it always was. The loader is the
+ * library's, shared with ok-rn's stager (node-onlykey-lib/cli/firmware-plugins).
+ */
+const firmwarePlugins = require('node-onlykey-lib/cli/firmware-plugins');
+const PLUGINS = firmwarePlugins.selected();
+const PLUGINS_DIR = process.env.OKEMU_PLUGINS_DIR ? path.resolve(process.env.OKEMU_PLUGINS_DIR) : null;
 
 /**
  * Unpack one commit's tree into `dest`.
@@ -1402,6 +1414,13 @@ function main() {
   );
   console.log(`stage: DEBUG console ${debugOn ? 'on' : 'off'} in this tree`);
 
+  // 6b. plugins, if any were asked for - each hook must find its anchor exactly once
+  const pluginStats = firmwarePlugins.apply(
+    firmwarePlugins.load(PLUGINS, { dir: PLUGINS_DIR, release }), STAGE);
+  if (pluginStats.length) {
+    console.log(`stage: plugins ${pluginStats.map((p) => `${p.name} (${p.hooks} hooks, ${p.files} files)`).join(', ')}`);
+  }
+
   // 7. no fixed addresses: registers into the relocated blocks, then checked
   const registerCounts = rewriteRegisterBlocks();
 
@@ -1417,6 +1436,8 @@ function main() {
       'OnlyKey-Firmware': release.pins['OnlyKey-Firmware'] } : null,
     debug: debugOn,
     platform: versions.EMULATOR_PLATFORM,
+    /* only present in a plugin build: index.js gives it its own storage */
+    ...(PLUGINS.length ? { plugins: PLUGINS } : {}),
   }, null, 2) + '\n');
 
   console.log(

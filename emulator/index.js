@@ -44,6 +44,21 @@ const IFACE_NAME = {
  * lib/press-modes.js, the one place a mode becomes ticks. */
 const { MODE_TICKS, PRESS_MODES } = require('./lib/press-modes');
 
+/*
+ * A PLUGIN BUILD IS ANOTHER DEVICE: scripts/stage.js records its plugins in
+ * .stage/build.json, and its default storage is a folder of its own, so it
+ * never boots against the base emulator's flash or the other way round.
+ */
+function pluginStorageSuffix() {
+  try {
+    const built = JSON.parse(require('fs').readFileSync(path.join(__dirname, '.stage', 'build.json'), 'utf8'));
+    const names = Array.isArray(built.plugins) ? built.plugins : [];
+    return names.length ? '-' + require('node-onlykey-lib/cli/firmware-plugins').slotSuffix(names) : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 /* src/okemu_press.h OKEMU_PRESS_QUEUE_MAX - presses waiting at once. */
 const PRESS_QUEUE_MAX = 32;
 
@@ -62,7 +77,7 @@ class OnlyKeyEmulator extends EventEmitter {
     if (this.started) throw new Error('emulator already started');
 
     const storageDir = path.resolve(
-      opts.storageDir || path.join(__dirname, '.onlykey-storage')
+      opts.storageDir || path.join(__dirname, '.onlykey-storage' + pluginStorageSuffix())
     );
 
     native.start({
