@@ -1,0 +1,9 @@
+{
+  "about": "A backup taken on a 3.1.0 soft-key build WITH the edge firmware plugin (ok-rn/android/okemu/plugins/edge), by its kit test on 2026-10-02: one slot label, the backup key below, and the plugin section (0xFB) last. test/restore-plugin-backup.js restores it on whatever release this emulator is built as.",
+  "firmware": "3.1.0 working tree + OKEMU_PLUGINS=edge",
+  "passphrase": "okt edge backup passphrase 2026-10-02",
+  "slot": 2,
+  "label": "edgebkup",
+  "bytes": 408,
+  "data": "c54244ec89d756c80efa3788f5e89b7d36d9d3b712be7014c972948e94ee5382aa68a8e81d63b1c1b245ac26a84530b612c6dc29353414cf1d22d184466795d56afda8291cc5d1433d20a89038abf459052c2417c9ab0338ad8e0d19c31e09949b1686e70e1b2e06307e07a81ab6371f010c95064b5b7488a0af5d217cfa0d486d3251a57ff1dc191b7860f827ee8308109d8d0d440761d2bf8a1dd6ed2206f951d9d4049fc6a612e68f3202250e9d8b1d1af3c0bcd71f5b770471e40085579fe8a2e41d469595d832ff82f27b3350215266ec7698fa16e45e3426b08be63881e90bddbd1e6f32c53e614b1d4fa089caefc2b89007c1431a79dc1e5d0e12703be8761171fa962455b2e799e9b27c9a54cb20a6b509cb71986df1f9d8cdc06fe8609108e5c53f884cbf4a7ad522a269e1a7b99081741335e5d9b3a1e14462461ab77822b4f55226e2028a2771cb5b9d86760c9ae9db10a59c55a58d03834368fbcbd677b4d1361e5c6c3d432bf809089eec95282e3098e9df1e227a04457722ecd51f66c5bf14f538aca7fb9faaf30bcded01d480b7177d65"
+}
