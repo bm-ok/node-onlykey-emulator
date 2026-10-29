@@ -10,8 +10,10 @@
  *         (was the emulator plugin fix_usertimeout until 2026-10-26; sent to the maintainer 2026-10-26)
  *   0013  okcore: wiping an RSA slot clears its key type, so the wiped slot reads as empty (sent 2026-10-26)
  *
- * HELD (a HOLD file in its folder: kept, not staged, not sent):
- *   0014  okcrypto: clamp X25519 scalars (RFC 7748) - changes existing keys, needs the maintainer's migration plan
+ * SKIPPED (a SKIPPED file in its folder, beside its HOLD: the maintainer declined it - kept, never staged, never
+ * proposed again):
+ *   0014  okcrypto: clamp X25519 scalars (RFC 7748) - declined 2026-10-29: "We aren't going to change this as it
+ *         changes peoples keys"
  *
  * GONE WITH THE RE-PIN to the maintainer's ok-80e3ba0-fe9e293 (2026-10-26) - upstream carries them, so they are no
  * longer staged; their patches and READMEs stay in this repository's history:

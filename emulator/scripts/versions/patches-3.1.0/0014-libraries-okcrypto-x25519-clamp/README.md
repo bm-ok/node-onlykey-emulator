@@ -5,9 +5,9 @@
 **Size:** 1 file, +15 / -2: `onlykey/okcrypto.cpp` (`okcrypto_shared_secret()` and `okcrypto_compute_pubkey()`, the
 X25519 cases).
 **Order:** applies to `fe9e293` alone (`git am` clean). Firmware only.
-**Status:** HELD (the `HOLD` file beside this): not staged on our builds and not sent. It changes existing keys
-(section 3), so it is a proposal for the maintainer to plan after 3.1.0, not a drop-in fix. Its effect on our own keys
-is measured on a copy of the testnet soft key first and recorded here.
+**Status:** SKIPPED - the maintainer declined it on 2026-10-29: "We aren't going to change this as it changes peoples
+keys" (the `SKIPPED` file beside this). Kept as the record of the finding and its fix; never staged on our builds (the
+`HOLD` file), never proposed again. Sent 2026-10-28 as a decision package; it changes existing keys (section 3).
 **Write-up:** the finding in full, in the workspace: `FINDING-x25519-scalar-not-clamped.md`, with
 `FINDING-x25519/x25519_check.py` (the reproduction).
 

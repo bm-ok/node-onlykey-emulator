@@ -1,3 +1,3 @@
-Not staged, not sent: this patch changes existing X25519 keys (README section 3).
-It waits for a measurement on a copy of the testnet soft key and for Brad.
+Not staged: this patch changes existing X25519 keys (README section 3).
+SKIPPED upstream (the SKIPPED file beside this): the maintainer declined it on 2026-10-29 - it is not proposed again.
 gen-fixes.js and plugins/edge/tools/build-hardkey.sh skip a folder holding this file.
