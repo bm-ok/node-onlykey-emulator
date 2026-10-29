@@ -108,6 +108,15 @@ module.exports = function register({ it }, ctx) {
       /* another site the key trusts: another secret; a host that checks silently first (Windows): the same one */
       const other = await derive(device, signal, 'okedge/test/a', {}, { rpId: 'apps.onlykey.io' });
       assert.notEqual(other, a1, 'another rpId, another secret');
+      /* one host, a request at another site (opts.rpId - the bucket key under the site the key names): that site's secret, and the host's own requests after it are still its own */
+      {
+        const app = await browser(device, signal);
+        try {
+          const ask = (opts) => app.services.okcrypto.deriveSecret('okedge/test/a', { timeoutMs: 40000, ...opts }).then(hex);
+          assert.equal(await ask({ rpId: 'apps.onlykey.io' }), other, 'a request at another site: not that site\'s secret');
+          assert.equal(await ask(), a1, 'after a request at another site, the host\'s own derive changed');
+        } finally { await app.destroy(); }
+      }
       const win = await derive(device, signal, 'okedge/test/a', {}, { silentCheck: true });
       assert.equal(win, a1, 'the Windows host derives the same secret');
       log(`touchless a ${a1.slice(0, 16)}, b ${b.slice(0, 16)}, at apps.onlykey.io ${other.slice(0, 16)}; touch a ${t1.slice(0, 16)}`);
