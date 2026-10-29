@@ -191,7 +191,38 @@ void okemu_map_peripherals(void) {
   *reg8(kFTFL_FSTAT) = 0x80;
 }
 
+/* See okemu_set_board() in ok_hal.h. */
+int g_board = OKEMU_BOARD_ONLYKEY;
+
 }  // namespace
+
+/*
+ * THE BOARD, as the firmware's own detection reads it.
+ *
+ * calibratecaptouch() (okcore.cpp) settles the model on its 300th round:
+ * `HW_ID == 5` (SIM_SDID PINID, the package) is the LQFP OnlyKey outright;
+ * otherwise it averages ten analogRead(A12) - tied to 3.3 V on an OnlyKey,
+ * floating on a DUO - and a mean inside 62000..67000 is an OnlyKey, anything
+ * else a DUO, each re-checked four times with a CPU_RESTART on disagreement.
+ *
+ * Only PINID is set here. A12 is answered in analogRead() (okemu_pins.cpp):
+ * tied high on the BGA OnlyKey, and on a DUO the noise every other analog pin
+ * already returns - whose mean of ten is nowhere near full scale, which is what
+ * "floating" means to this test. The constructor's PINID 5 stays the default,
+ * so a host that never names a board gets exactly the device it always did.
+ */
+extern "C" int okemu_set_board(const char *name) {
+  int board;
+  if (!name || !strcmp(name, "onlykey")) board = OKEMU_BOARD_ONLYKEY;
+  else if (!strcmp(name, "onlykey-bga")) board = OKEMU_BOARD_ONLYKEY_BGA;
+  else if (!strcmp(name, "duo")) board = OKEMU_BOARD_DUO;
+  else return -1;
+  g_board = board;
+  *reg32(kSIM_SDID) = (board == OKEMU_BOARD_ONLYKEY) ? 0x00000005 : 0x00000009;
+  return 0;
+}
+
+extern "C" int okemu_board(void) { return g_board; }
 
 /* ------------------------------------------------------------ sinks */
 
@@ -566,6 +597,9 @@ void okemu_delay_ms(uint32_t ms) {
  * same reason.
  */
 __attribute__((weak)) uint8_t onlykeyhw = 5;   /* onlykey.h:105, OK_HW_COLOR */
+
+/* The model the firmware settled on - see okemu_set_board() for how it decides. */
+extern "C" int okemu_detected_hw(void) { return onlykeyhw; }
 
 #ifdef _WIN32
 /*

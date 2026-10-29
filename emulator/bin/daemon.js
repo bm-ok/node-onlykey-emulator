@@ -23,7 +23,10 @@
  * a HID device to Windows and that is a driver. See ../../windows-driver.
  *
  * Usage:
- *   node bin/daemon.js [--socket PATH] [--storage DIR] [--no-hid] [--quiet]
+ *   node bin/daemon.js [--socket PATH] [--storage DIR] [--hardware onlykey|onlykey-bga|duo]
+ *                      [--no-hid] [--quiet]
+ *
+ * --hardware is the board (index.js HARDWARE); unset, OKEMU_HARDWARE, then 'onlykey'.
  */
 'use strict';
 
@@ -39,7 +42,7 @@ const EXIT_RESTART = 0;   // expected: firmware reboot, pm2 should respawn
 const EXIT_FATAL = 1;
 
 function parseArgs(argv) {
-  const out = { uhid: true, socket: defaultSocketPath(), storage: null, quiet: false };
+  const out = { uhid: true, socket: defaultSocketPath(), storage: null, hardware: undefined, quiet: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     /* --no-uhid is the old spelling, kept working: it disables whichever
@@ -48,8 +51,9 @@ function parseArgs(argv) {
     else if (a === '--quiet') out.quiet = true;
     else if (a === '--socket') out.socket = argv[++i];
     else if (a === '--storage') out.storage = argv[++i];
+    else if (a === '--hardware') out.hardware = argv[++i];
     else if (a === '--help' || a === '-h') {
-      console.log('usage: daemon.js [--socket PATH] [--storage DIR] [--no-hid] [--quiet]');
+      console.log('usage: daemon.js [--socket PATH] [--storage DIR] [--hardware onlykey|onlykey-bga|duo] [--no-hid] [--quiet]');
       process.exit(0);
     }
   }
@@ -60,8 +64,8 @@ const args = parseArgs(process.argv);
 const log = (...m) => console.log('[okemu]', ...m);
 
 async function main() {
-  emu.start({ storageDir: args.storage });
-  log(`firmware running, storage: ${emu.storageDir}`);
+  emu.start({ storageDir: args.storage, hardware: args.hardware });
+  log(`firmware running, storage: ${emu.storageDir}, hardware: ${emu.hardware}`);
 
   /*
    * Tee the firmware's SEREMU output to stdout as well as to IPC clients.

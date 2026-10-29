@@ -35,10 +35,24 @@
  */
 const { PRESS_TICKS, GESTURES, bandFor } = require('node-onlykey-lib/device/press');
 
+/*
+ * THE DUO'S LONG HOLDS, which a Classic never needs. payload() (OnlyKey.ino)
+ * takes config mode on a DUO from button 1 held >= 180 rounds, and factory
+ * default from button 2 held >= 360 in config mode; nothing caps the count
+ * before payload() sees it (touch_sense_loop() hands key_on over as is). Both
+ * sit well clear of their edge, as TAP and HOLD do. They are for callers that
+ * say what they mean - the kit, IPC - and modeForHeldMs() never returns them:
+ * the UI's held-button timer still stops at HOLD_CEILING.
+ */
+const DUO_CONFIG_TICKS = 200;   /* >= 180: config mode, on a DUO's button 1 */
+const DUO_RESET_TICKS = 400;    /* >= 360: factory default, button 2 in config mode */
+
 const MODE_TICKS = Object.freeze({
   tap: PRESS_TICKS.TAP,
   press: PRESS_TICKS.HOLD,
   hold: PRESS_TICKS.GESTURE,
+  long: DUO_CONFIG_TICKS,
+  longest: DUO_RESET_TICKS,
 });
 
 const PRESS_MODES = Object.freeze(Object.keys(MODE_TICKS));

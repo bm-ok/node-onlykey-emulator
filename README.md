@@ -709,6 +709,11 @@ one line and the caller never has to pace the digits itself:
 | `1#250` | 250 | an exact duration, for testing a band boundary |
 | `1234567` | — | seven taps in order |
 
+One exception to "self-delimiting": `#` reads digits greedily, so `3#403#40`
+is button 3 for 403 rounds and then a stray `#`, and the line is ignored. End
+the line after each `#ticks` press; the press queue outlives a line, so order
+is kept.
+
 Durations are the units `payload()` (`OnlyKey.ino`) compares against. A single
 fixed `128` used to be the only hold this channel could produce, which left
 every action from `140` up unreachable.
@@ -733,6 +738,38 @@ line-buffer; it is now rejected with a message rather than silently ignored, so
 a caller still sending the old `"<digit> "` form finds out immediately instead
 of watching its presses vanish. `onlykey-testing` was updated to match
 — see `lib/hid.js`'s `sendLine()` / `sendPress()`.
+
+### The board: OnlyKey or DUO
+
+One firmware image serves both models and tells them apart itself, in
+`calibratecaptouch()` (`okcore.cpp`): `SIM_SDID`'s PINID 5 (LQFP) is an OnlyKey
+outright; PINID 9 (BGA) is decided by ten reads of analog pin A12, tied to 3.3 V
+on an OnlyKey and floating on a DUO. `start({ hardware })` picks the board that
+detection reads, so the firmware under test is unmodified:
+
+| `hardware` | PINID | A12 | Firmware detects |
+|------------|-------|-----|------------------|
+| `onlykey` (default) | 5 | not read | OnlyKey |
+| `onlykey-bga` | 9 | full scale | OnlyKey |
+| `duo` | 9 | floating (noise) | DUO |
+
+`OKEMU_HARDWARE` names it when the caller cannot (a device host), and
+`bin/daemon.js --hardware` does the same. `detectedModel()` returns what the
+firmware decided; a board other than `onlykey` gets its own default storage
+folder. `OKEMU_MODEL=duo` at stage time is the other way to a DUO: it compiles
+the firmware's `DEFINED_HWID` override in and skips detection. `test/hardware.js`
+checks all three boards and a DUO PIN with digits 4–6.
+
+On a DUO:
+
+- buttons are 1–3, and 3 is both pads (`ok_hal.cpp`); `pressButtons()` refuses
+  4–6 rather than pressing a pad that is not there;
+- PIN digits 4–6 are 1–3 held 21+ rounds while locked - `pinPresses('1425361')`
+  returns the presses for the current model;
+- config mode is button 1 held `>= 180` (`mode: 'long'`), factory default button
+  2 held `>= 360` in config mode (`mode: 'longest'`);
+- its PIN is set by the App as digits (`OKSETPIN`, `0xFF`, then 16-byte ASCII
+  slots at frame offsets 6, 22 and 38 - OnlyKey-App `sendPinDUO()`), not typed.
 
 ---
 

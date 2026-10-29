@@ -62,6 +62,23 @@ function pluginStorageSuffix() {
 /* src/okemu_press.h OKEMU_PRESS_QUEUE_MAX - presses waiting at once. */
 const PRESS_QUEUE_MAX = 32;
 
+/*
+ * THE BOARD, which is not the build. One firmware image serves both models and
+ * tells them apart itself (okcore.cpp calibratecaptouch(): SIM_SDID's PINID,
+ * then analog pin A12), so this picks what that detection reads - see
+ * okemu_set_board() in src/ok_hal.h:
+ *
+ *   onlykey      LQFP chip                      -> the firmware says OnlyKey (default)
+ *   onlykey-bga  BGA chip, A12 tied to 3.3 V    -> OnlyKey, by the analog test
+ *   duo          BGA chip, A12 floating         -> DUO
+ *
+ * OKEMU_MODEL=duo at stage time is the other way to get a DUO: it compiles the
+ * firmware's DEFINED_HWID override in, which skips detection altogether.
+ */
+const HARDWARE = Object.freeze(['onlykey', 'onlykey-bga', 'duo']);
+const HW_DUO = 9;          /* onlykey.h OK_HW_DUO */
+const DETECT_ROUND = 300;  /* calibratecaptouch(): the model is settled at j == 299 */
+
 class OnlyKeyEmulator extends EventEmitter {
   constructor() {
     super();
@@ -72,16 +89,25 @@ class OnlyKeyEmulator extends EventEmitter {
   /**
    * @param {object}  [opts]
    * @param {string}  [opts.storageDir] where flash.bin / eeprom.bin live
+   * @param {string}  [opts.hardware]   the board the chip sits on: 'onlykey' (default),
+   *   'onlykey-bga' or 'duo' - see HARDWARE. OKEMU_HARDWARE names it when the caller cannot.
    */
   start(opts = {}) {
     if (this.started) throw new Error('emulator already started');
 
+    const hardware = opts.hardware || process.env.OKEMU_HARDWARE || 'onlykey';
+    if (!HARDWARE.includes(hardware)) {
+      throw new RangeError(`hardware must be one of ${HARDWARE.join(', ')}, got ${hardware}`);
+    }
+
     const storageDir = path.resolve(
-      opts.storageDir || path.join(__dirname, '.onlykey-storage' + pluginStorageSuffix())
+      opts.storageDir || path.join(__dirname, '.onlykey-storage' + pluginStorageSuffix() +
+        (hardware === 'onlykey' ? '' : '-' + hardware))
     );
 
     native.start({
       storageDir,
+      hardware,
 
       onLed: (pixels) => {
         this.led = pixels;
@@ -109,7 +135,45 @@ class OnlyKeyEmulator extends EventEmitter {
 
     this.started = true;
     this.storageDir = storageDir;
+    this.hardware = hardware;
     return this;
+  }
+
+  /**
+   * The model the FIRMWARE settled on, from its own detection: 'duo', 'onlykey', or null
+   * while it is still calibrating (it decides on the 300th sense round after boot).
+   * Compare with this.hardware, which is only what the board was wired as.
+   */
+  detectedModel() {
+    const hw = native.detectedHw();
+    if (hw === HW_DUO) return 'duo';
+    return native.rounds() >= DETECT_ROUND ? 'onlykey' : null;
+  }
+
+  /** A DUO by either lever: wired as one, or built as one (OKEMU_MODEL=duo). */
+  isDuo() {
+    return this.hardware === 'duo' || native.detectedHw() === HW_DUO;
+  }
+
+  /**
+   * The presses that type a PIN on THIS model, for pressButtons().
+   *
+   * A Classic taps the digit. A DUO has three buttons, and payload()
+   * (OnlyKey.ino) turns a press of 21+ rounds into button + 3 while the key is
+   * locked - "longer press to enter PIN of 4 - 6" - so 4, 5, 6 are 1, 2, 3 in
+   * 'press' mode. That mapping is the firmware's, applied only when `!unlocked`;
+   * what a DUO does with a long press while a PIN is being SET is the
+   * firmware's business too, and test/hardware.js measures it rather than
+   * assuming it.
+   * @param {string|number[]} digits e.g. '1234561'
+   */
+  pinPresses(digits) {
+    const ds = Array.from(String(Array.isArray(digits) ? digits.join('') : digits), Number);
+    if (ds.some((d) => !Number.isInteger(d) || d < 1 || d > 6)) {
+      throw new RangeError(`PIN digits are 1..6, got ${digits}`);
+    }
+    if (!this.isDuo()) return ds;
+    return ds.map((d) => (d > 3 ? { button: d - 3, mode: 'press' } : d));
   }
 
   /**
@@ -139,10 +203,17 @@ class OnlyKeyEmulator extends EventEmitter {
   pressButtons(presses) {
     const buttons = [];
     const ticks = [];
+    const duo = this.isDuo();
     for (const p of presses) {
       const { button, mode = 'tap' } = typeof p === 'object' ? p : { button: p };
       if (!Number.isInteger(button) || button < 1 || button > 6) {
         throw new RangeError(`button must be 1..6, got ${button}`);
+      }
+      /* A DUO has buttons 1-3 (3 is both pads, see ok_hal.cpp); a press of 4-6
+       * would land on a pad that is not there and do nothing - refused instead
+       * of lost. Its PIN digits 4-6 are 1-3 in 'press' mode: see pinPresses(). */
+      if (duo && button > 3) {
+        throw new RangeError(`a DUO has buttons 1..3, got ${button} (PIN digits 4-6 are pinPresses())`);
       }
       if (!Object.prototype.hasOwnProperty.call(MODE_TICKS, mode)) {
         throw new RangeError(`mode must be one of ${PRESS_MODES.join(', ')}, got ${mode}`);
@@ -307,3 +378,4 @@ module.exports = new OnlyKeyEmulator();
 module.exports.OnlyKeyEmulator = OnlyKeyEmulator;
 module.exports.IFACE = IFACE;
 module.exports.IFACE_NAME = IFACE_NAME;
+module.exports.HARDWARE = HARDWARE;

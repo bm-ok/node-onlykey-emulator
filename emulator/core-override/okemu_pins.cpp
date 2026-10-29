@@ -210,11 +210,23 @@ void analogReadAveraging(unsigned int /*num*/) {}
  * derivation, so returning a constant would weaken the emulated device in a
  * way that is easy to miss. Draw from the OS CSPRNG instead.
  */
-int analogRead(uint8_t /*pin*/) {
+int analogRead(uint8_t pin) {
   uint32_t v = 0;
   okemu_random_bytes((uint8_t *)&v, sizeof v);
   const uint32_t mask = (s_analog_res >= 32) ? 0xFFFFFFFFu
                                              : ((1u << s_analog_res) - 1u);
+  /*
+   * A12 IS A STRAP, NOT A NOISE SOURCE, on the BGA OnlyKey: tied to 3.3 V, so it
+   * reads full scale less a little noise - inside the 62000..67000 window that
+   * avganalog() (okcore.cpp) takes for "this is an OnlyKey", at the 16 bits
+   * setup() asks for. On a DUO it floats, which is the noise above; on the LQFP
+   * OnlyKey the firmware never asks. 36 is A12 on an MK20DX256
+   * (teensy3/pins_arduino.h), the chip binding.gyp builds for.
+   */
+  if (pin == 36 && okemu_board() == OKEMU_BOARD_ONLYKEY_BGA) {
+    const uint32_t noise = (mask >> 6) ? (v % ((mask >> 6) + 1)) : 0;   /* under 1.6% of scale */
+    return (int)(mask - noise);
+  }
   return (int)(v & mask);
 }
 

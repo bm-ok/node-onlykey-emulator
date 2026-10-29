@@ -123,6 +123,26 @@ void okemu_set_restart_sink(okemu_event_sink fn, void *ctx);
 int  okemu_hal_init(const char *storage_dir, char *err, size_t errlen);
 void okemu_hal_shutdown(void);
 
+/*
+ * WHICH BOARD the emulated chip sits on - what the firmware's OWN detection
+ * reads (okcore.cpp calibratecaptouch(): SIM_SDID's PINID, then analog pin A12).
+ *
+ *   OKEMU_BOARD_ONLYKEY      MK20 LQFP, PINID 5          -> OK_HW_COLOR (the default, as before)
+ *   OKEMU_BOARD_ONLYKEY_BGA  MK20 BGA,  PINID 9, A12 tied to 3.3 V -> OK_HW_COLOR
+ *   OKEMU_BOARD_DUO          MK20 BGA,  PINID 9, A12 floating    -> OK_HW_DUO
+ *
+ * This is the board, not a build option: one firmware image decides for itself,
+ * as the release hex does on hardware. (OKEMU_MODEL=duo at stage time is the
+ * other lever - it compiles the firmware's DEFINED_HWID override in and skips
+ * detection.) Set it before okemu_hal_init(); names are "onlykey",
+ * "onlykey-bga" and "duo". Returns 0, or -1 for a name it does not know.
+ */
+enum { OKEMU_BOARD_ONLYKEY = 0, OKEMU_BOARD_ONLYKEY_BGA = 1, OKEMU_BOARD_DUO = 2 };
+int  okemu_set_board(const char *name);
+int  okemu_board(void);
+/* What the firmware decided: its onlykeyhw (5 OK_HW_COLOR, 9 OK_HW_DUO). */
+int  okemu_detected_hw(void);
+
 /* Wipes flash + EEPROM back to erased state (0xFF) - a factory reset. */
 void okemu_factory_reset(void);
 

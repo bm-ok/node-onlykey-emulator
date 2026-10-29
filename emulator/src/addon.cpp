@@ -120,6 +120,20 @@ Napi::Value Start(const Napi::CallbackInfo &info) {
                         ? opt.Get("storageDir").As<Napi::String>().Utf8Value()
                         : std::string("./.onlykey-storage");
 
+  /* The board, before anything maps or runs - see okemu_set_board(). */
+  if (opt.Has("hardware") && !opt.Get("hardware").IsUndefined()) {
+    if (!opt.Get("hardware").IsString()) {
+      Napi::TypeError::New(env, "hardware must be a string").ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    std::string hw = opt.Get("hardware").As<Napi::String>().Utf8Value();
+    if (okemu_set_board(hw.c_str()) != 0) {
+      Napi::TypeError::New(env, "hardware must be \"onlykey\", \"onlykey-bga\" or \"duo\", got \"" + hw + "\"")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+  }
+
   char err[512] = {0};
   if (okemu_hal_init(dir.c_str(), err, sizeof err) != 0) {
     Napi::Error::New(env, err).ThrowAsJavaScriptException();
@@ -383,6 +397,11 @@ Napi::Value Rounds(const Napi::CallbackInfo &info) {
   return Napi::Number::New(info.Env(), (double)okemu_rounds());
 }
 
+/* The model the firmware detected (5 OK_HW_COLOR, 9 OK_HW_DUO) - its onlykeyhw. */
+Napi::Value DetectedHw(const Napi::CallbackInfo &info) {
+  return Napi::Number::New(info.Env(), (double)okemu_detected_hw());
+}
+
 Napi::Value FactoryReset(const Napi::CallbackInfo &info) {
   okemu_factory_reset();
   return info.Env().Undefined();
@@ -434,6 +453,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("setButtonTicks",  Napi::Function::New(env, SetButtonTicks));
   exports.Set("buttonTicksLeft", Napi::Function::New(env, ButtonTicksLeft));
   exports.Set("rounds",          Napi::Function::New(env, Rounds));
+  exports.Set("detectedHw",      Napi::Function::New(env, DetectedHw));
   exports.Set("factoryReset", Napi::Function::New(env, FactoryReset));
   exports.Set("stop",         Napi::Function::New(env, Stop));
   exports.Set("ref",          Napi::Function::New(env, Ref));
