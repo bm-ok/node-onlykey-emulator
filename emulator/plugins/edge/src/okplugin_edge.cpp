@@ -62,6 +62,12 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_GRANT_RESUME 14
 /* op 15 is not written and not reused */
 #define OP_CONTINUE 16 /* the first link of a restored device's own chain, carrying the backup's debt */
+/* a touchless derive_secret a budget paid: slot 128, its label in the scope */
+#define OP_DERIVE 17
+#define DERIVE_SLOT 128
+/* derive_secret's request (its okplugin_derive_secret.h, not included: edge needs no other plugin): mode || label hash */
+#define DERIVE_TOUCHLESS 1
+#define DERIVE_PAYLOAD 33
 #define DECISION_SELF_PRESS 4
 #define CODE_NEEDS_REVIEW 0x8F /* a SETTLE is linked as a receipt with this code and the press flag */
 #define FLAG_PRESS_OBSERVED 0x01
@@ -786,6 +792,11 @@ static int scope_allowed(uint8_t op, uint8_t slot) {
   int stored = (slot >= 1 && slot <= 4) || (slot >= 101 && slot <= 116);
   if (op == OP_SIGN) return stored || (slot >= 201 && slot <= 203) || (slot >= 221 && slot <= 223);
   if (op == OP_DECRYPT) return stored;
+  /*
+   * The one derive a budget pays: derive_secret's touchless derive on slot 128, bound to one label (a scope without its
+   * label is refused, as a derived code's). Never the touch derive, never the shared secret.
+   */
+  if (op == OP_DERIVE) return slot == DERIVE_SLOT;
   return 0;
 }
 
@@ -937,8 +948,8 @@ static void grant_create(const uint8_t *buffer) {
     sc->slot = p[1];
     sc->cap = get16(p + 2);
     if (!scope_allowed(sc->op, sc->slot) || sc->cap < 1) { press_drop(); status(EDGE_SCOPE_NOT_ALLOWED); return; }
-    if (derived_code(sc->slot)) {
-      /* a derived code names one identity, or the budget is refused (EDGE:03) */
+    if (derived_code(sc->slot) || sc->op == OP_DERIVE) {
+      /* a derived code names one identity, a derive its label - or the budget is refused (EDGE:03) */
       if (!fresh || !have[j]) { press_drop(); status(EDGE_SCOPE_NOT_ALLOWED); return; }
       sc->has_label = 1;
       memcpy(sc->label, labels[j], LABEL_PREFIX);
@@ -1199,6 +1210,44 @@ void okplugin_edge_decision(int decision) {
       return;
     }
   }
+}
+
+/*
+ * A derive a budget pays. Asked by the core's derive gate (plugin.js hook) for a request it would otherwise put to field 30, with
+ * that request's bytes: derive_secret's touchless payload, mode || label hash. Paid exactly as a sign is: announced by
+ * its TX start (this request, after this head), a live budget with a DERIVE scope on slot 128 naming this label,
+ * unlocked and nothing owed - then it is a self-press link that spends the budget, reveals the next value of its series,
+ * carries the intent and owes a receipt, and the gate answers without asking. Anything else -> 0: the gate asks as it
+ * always does (an announced derive no budget can pay spends its TX start, as a sign's does). A touch derive - a secret
+ * the person reveals with a press - is never paid: the gate asks only for floor NONE, and the mode byte is checked.
+ */
+static uint8_t derive_intent[16];
+int okplugin_edge_pay_derive(const uint8_t *payload, int len) {
+  if (len != DERIVE_PAYLOAD || payload[0] != DERIVE_TOUCHLESS) return 0;
+  state_load();
+  if (!started) return 0;
+  uint8_t subject[32], t[32];
+  H(subject, NULL, payload, (size_t)len, NULL, 0, NULL, 0);
+  H(t, "OKEDGE-TX-v1", st.head, 32, subject, 32, tx_intent, 16);
+  int announced = memcmp(t, tx_token, 32) == 0;
+  struct scope *sc;
+  int i = announced && ensure_identity() ? budget_for(OP_DERIVE, DERIVE_SLOT, payload + 1, &sc) : -1;
+  if (i < 0) {
+    /* not the announced request, or nothing can pay it: an ordinary derive - the TX start is spent either way */
+    started = 0;
+    if (!announced && refused_tx < 255) refused_tx++;
+    return 0;
+  }
+  struct budget *b = &budgets[i];
+  uint8_t reveal[32];
+  b->used++;
+  sc->used++;
+  hash_times(reveal, b->seed, b->uses - b->used); /* v_i = H^(n-i)(seed) (lib grants.reveal) */
+  if (tx_has_intent) { memcpy(derive_intent, tx_intent, 16); next_intent = derive_intent; }
+  append_scoped(OP_DERIVE, DECISION_SELF_PRESS, DERIVE_SLOT, FLAG_OWES_RECEIPT | FLAG_BUDGET_SPENT, subject, b->id, b->used,
+                (uint8_t)(sc - b->scopes + 1), reveal);
+  memset(reveal, 0, 32);
+  return 1;
 }
 
 /*

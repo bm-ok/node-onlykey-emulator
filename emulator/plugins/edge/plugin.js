@@ -93,5 +93,26 @@ module.exports = {
         + '                    handle_len = 0;\n'
         + '                }\n',
     },
+    /*
+     *  12-13 ok_extension.cpp  THE DERIVE GATE ASKS EDGE FIRST (PROPOSAL-login-plan.md, the login budget; Brad,
+     *                       2026-10-29: "we can change the RFC"): a request the gate would put to field 30 (floor
+     *                       NONE - never a touch derive) is handed to okplugin_edge_pay_derive, which answers 1 only
+     *                       for a touchless derive_secret its TX start announced and a live DERIVE scope pays - then
+     *                       the gate lets it run with no press, and the use is a link. Not `with: 'ctap_bridge'`: the
+     *                       gate serves every host (a browser, the CLI over CTAPHID), and the login plan works local
+     *                       only. The function is declared here, so no header include depends on the bridge.
+     */
+    {
+      file: 'libraries/fido2/ok_extension.cpp',
+      anchor: 'static int web_agent_derive_gate(uint8_t floor_mode, const uint8_t *data, int len) {\n',
+      insert: 'before',
+      text: 'int okplugin_edge_pay_derive(const uint8_t *payload, int len); /* plugin edge */\n',
+    },
+    {
+      file: 'libraries/fido2/ok_extension.cpp',
+      anchor: '    uint8_t need = okcore_web_agent_derive_mode();\n',
+      insert: 'after',
+      text: '    if (floor_mode == USER_INPUT_NONE && okplugin_edge_pay_derive(data, len)) return 0; /* plugin edge: a budget pays it */\n',
+    },
   ],
 };
