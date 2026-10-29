@@ -1434,4 +1434,97 @@ module.exports = function register({ it }, ctx) {
         await app.destroy();
       }
     });
+
+  /*
+   * THE LOGIN BUDGET'S DERIVE (PROPOSAL-login-plan.md; Brad, 2026-10-29: "1 press = logs into our app", "we can change
+   * the RFC"): a budget may pay derive_secret's touchless derive on slot 128 for the one label its scope names. Over
+   * WebAuthn, as the web app asks: the grant at a press, a TX start for the exact request (mode || label hash), the
+   * derive with no press - the same 32 bytes an ordinary derive gives - a self-press link (op 17) under the budget, owing
+   * its receipt. Another label is not paid: field 30 asks its code, and no link is written.
+   */
+  const OP_DERIVE = 17;
+  const hasDerive = !(ctx.build && Array.isArray(ctx.build.plugins)) || ctx.build.plugins.includes('derive_secret');
+  it('edge: a budget pays a touchless derive_secret for the label its scope names - no press, a link that owes its receipt; another label asks its code (the login budget)',
+    async ({ device, assert, signal, log, skip }) => {
+      if (!hasDerive) return skip('this emulator was built without derive_secret');
+      await device.restart({ signal });
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+
+      const Rectify = ctx.requireLib('@bmatusiak/rectify');
+      const plugins = ['host', 'transport/tunnel', 'session', 'device', 'okcrypto', 'edge']
+        .map((p) => ctx.requireLib(`node-onlykey-lib/plugins/${p}`));
+      const { createWebAuthnCtap } = ctx.requireLib('node-onlykey-lib/transport/webauthn');
+      const { window } = ctx.kit.webenv.create(device, { signal });
+      plugins.config = { okcrypto: { ctap: createWebAuthnCtap({ credentials: window.navigator.credentials }) } };
+      const app = await new Promise((resolve, reject) => {
+        const a = Rectify.build(plugins, (err, started) => (err ? reject(err) : resolve(started)));
+        a.start();
+      });
+      try {
+        const { okcrypto, edge: web } = app.services;
+        await okcrypto.connectTunnel();
+        const LABEL = 'okt login: the bucket';
+        const OTHER = 'okt login: another label';
+        const payloadOf = (label) => new Uint8Array(Buffer.concat([Buffer.from([1]), sha256(Buffer.from(label))]));
+        /*
+         * an ordinary derive asks its code (field 30's default): the code pressed as the host shows it. The lib calls
+         * confirm BEFORE it sends (a host cannot know whether the key will ask), so an ask is counted only when the key
+         * has not answered by the time a person would press - a derive the budget pays has answered by then.
+         */
+        let asked = 0;
+        const code = async ({ digits, isAnswered }) => {
+          await device.sleep(1500, { signal });
+          if (isAnswered && isAnswered()) return;
+          asked += 1;
+          if (digits) device.pressLine(digits); else device.press(1);
+        };
+        const ordinary = Buffer.from(await okcrypto.deriveSecret(LABEL, { timeoutMs: 40000, confirm: code }));
+        assert.equal(asked, 1, 'an ordinary derive did not ask its code');
+
+        const SEEDED = /Generating random number of size = 32/g;
+        const seeded = device.log.count(SEEDED);
+        const h = await web.head();
+        const g = await web.grant({
+          scopes: [{ op: OP_DERIVE, slot: 128, cap: 1, derive: LABEL }],
+          reasonHash: new Uint8Array(sha256(Buffer.from('okt: log in'))),
+          verifiedHead: h.head,
+          onPress: () => {
+            device.log.waitForCount(SEEDED, seeded + 1, { timeoutMs: 20000, signal })
+              .then(() => device.sleep(800, { signal })).then(() => device.press(1), () => {});
+          },
+        });
+        log(`login budget #${g.grantId} (${g.uses} use) at #${g.seq}`);
+
+        /* the paid derive: TX start for its exact request, then the derive - nothing asked */
+        const before = await web.head();
+        await web.txStart(before.head, grants.requestSubject(payloadOf(LABEL)));
+        asked = 0;
+        const paid = Buffer.from(await okcrypto.deriveSecret(LABEL, { timeoutMs: 40000, confirm: code }));
+        assert.equal(asked, 0, 'the derive the budget pays asked for a code');
+        assert.bytes(paid, ordinary, 'a paid derive gave another secret than the ordinary one');
+        const after = await web.head();
+        assert.equal(after.seq, before.seq + 1, 'the paid derive wrote no link');
+        const [l] = await web.pickup(after.seq, 1);
+        const f = chain.decodeLink(l.link);
+        assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.grantId]), JSON.stringify([OP_DERIVE, SELF_PRESS, 128, g.grantId]),
+          'the paid derive is not a self-press under the login budget');
+        assert.ok(f.reservedZero, 'the lib does not read the derive link as well-formed');
+        assert.bytes(Buffer.from(f.subject), Buffer.from(grants.requestSubject(payloadOf(LABEL))), 'its subject is not SHA-256 of the request');
+        assert.equal(after.owed, 1, 'the paid derive does not owe its receipt');
+        const rc = await web.receipt(f.seq, 0, new Uint8Array(sha256(Buffer.from('okt: the bucket opened'))));
+        assert.ok(!(await web.head()).owed, 'the receipt did not pay the derive');
+
+        /* another label under a TX start: no scope names it - its code is asked, no link */
+        const b2 = await web.head();
+        await web.txStart(b2.head, grants.requestSubject(payloadOf(OTHER)));
+        asked = 0;
+        await okcrypto.deriveSecret(OTHER, { timeoutMs: 40000, confirm: code });
+        assert.equal(asked, 1, 'a derive no scope names was not asked its code');
+        assert.equal((await web.head()).seq, b2.seq, 'an unpaid derive wrote a link');
+        log(`a derive paid at #${f.seq} (receipt #${rc.seq}); another label asked its code, no link`);
+      } finally {
+        await app.destroy();
+      }
+    });
 };
