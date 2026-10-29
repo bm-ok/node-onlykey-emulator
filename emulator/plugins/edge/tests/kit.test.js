@@ -1486,7 +1486,8 @@ module.exports = function register({ it }, ctx) {
         const seeded = device.log.count(SEEDED);
         const h = await web.head();
         const g = await web.grant({
-          scopes: [{ op: OP_DERIVE, slot: 128, cap: 1, derive: LABEL }],
+          /* two uses: the second keeps the budget live for the unpaid label below (a spent budget refuses every TX start) */
+          scopes: [{ op: OP_DERIVE, slot: 128, cap: 2, derive: LABEL }],
           reasonHash: new Uint8Array(sha256(Buffer.from('okt: log in'))),
           verifiedHead: h.head,
           onPress: () => {
@@ -1494,7 +1495,7 @@ module.exports = function register({ it }, ctx) {
               .then(() => device.sleep(800, { signal })).then(() => device.press(1), () => {});
           },
         });
-        log(`login budget #${g.grantId} (${g.uses} use) at #${g.seq}`);
+        log(`login budget #${g.grantId} (${g.uses} uses) at #${g.seq}`);
 
         /* the paid derive: TX start for its exact request, then the derive - nothing asked */
         const before = await web.head();
@@ -1523,6 +1524,7 @@ module.exports = function register({ it }, ctx) {
         assert.equal(asked, 1, 'a derive no scope names was not asked its code');
         assert.equal((await web.head()).seq, b2.seq, 'an unpaid derive wrote a link');
         log(`a derive paid at #${f.seq} (receipt #${rc.seq}); another label asked its code, no link`);
+        assert.equal(await edge(device, GRANT_REVOKE, u32(g.grantId), { signal, text: true }), 'EDGE:00');
       } finally {
         await app.destroy();
       }
