@@ -1,3 +1,5 @@
-Experimental, not sent upstream: a speed improvement for hosts that make several WebAuthn requests in a row (Edge, the MCP plan runner).
+Experimental: a speed improvement for hosts that make several WebAuthn requests in a row (Edge, the MCP plan runner).
 A build carries it only when the version_control plugin's version.json lists it.
-It waits for testing and for Brad.
+Brad, 2026-10-29: our experiment to judge - it goes upstream when it is safe: no protocol change (none: it changes only when a
+delivered reply is wiped), and the maintainer's 3.1.0 apps unaffected - the original web app (onlykey.github.io, apps.crp.to),
+the desktop OnlyKey-App, the python tools. Tested against them before it is offered.
