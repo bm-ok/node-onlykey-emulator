@@ -723,7 +723,8 @@ static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const u
   H(head, "OKEDGE-LINK-v1", s->head, 32, link, LINK_BYTES, NULL, 0);
 
   uint8_t op = link[4], decision = link[5];
-  if (op == OP_SIGN || op == OP_DECRYPT) {
+  /* a use - a sign, a decrypt or a paid derive - may owe a receipt */
+  if (op == OP_SIGN || op == OP_DECRYPT || op == OP_DERIVE) {
     if ((decision == OKEDGE_DECISION_APPROVE || decision == DECISION_SELF_PRESS) && (link[7] & FLAG_OWES_RECEIPT)) {
       s->owes = 1;
       s->owed.seq = seq;
