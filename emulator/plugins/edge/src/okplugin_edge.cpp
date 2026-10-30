@@ -718,15 +718,21 @@ static void settle_subject(const struct edge_state *s, uint8_t out[32]) {
  * The record is saved before the operation's result is released.
  */
 /*
- * Event "edge_link" on each link stored: [0..3] its seq (u32 LE). Delivered by okemu_plugin_event(),
- * provided by the soft key's host layer; absent on a hard key build (weak symbol), where nothing is sent.
- * The host copies the key's links on this event instead of polling the head.
+ * Event "edge_link" on each link stored: [0..3] its seq (u32 LE), [4..67] the link, [68..99] the head
+ * after it, [100..131] the reveal (zeros if none) - one PICKUP answer for that seq. Delivered by
+ * okemu_plugin_event(), provided by the soft key's host layer; absent on a hard key build (weak symbol),
+ * where nothing is sent. The host keeps the link from the event itself, so a link written just before the
+ * host stops is not lost when later links push it out of the held ring.
  */
 extern "C" void okemu_plugin_event(const char *name, const uint8_t *data, int len) __attribute__((weak));
-static void link_written(uint32_t seq) {
+static void link_written(uint32_t seq, const uint8_t link[LINK_BYTES], const uint8_t head[32], const uint8_t *reveal) {
   if (!okemu_plugin_event) return;
-  uint8_t rec[4];
+  uint8_t rec[4 + LINK_BYTES + 64];
   put32(rec, seq);
+  memcpy(rec + 4, link, LINK_BYTES);
+  memcpy(rec + 4 + LINK_BYTES, head, 32);
+  if (reveal) memcpy(rec + 4 + LINK_BYTES + 32, reveal, 32);
+  else memset(rec + 4 + LINK_BYTES + 32, 0, 32);
   okemu_plugin_event("edge_link", rec, sizeof(rec));
 }
 
@@ -758,7 +764,7 @@ static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const u
   if (s == &st) {
     state_save();
     hold(seq, link, head, reveal);
-    link_written(seq);
+    link_written(seq, link, head, reveal);
   }
   return 1;
 }
