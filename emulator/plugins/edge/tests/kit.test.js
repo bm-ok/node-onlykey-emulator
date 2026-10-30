@@ -289,12 +289,13 @@ module.exports = function register({ it }, ctx) {
     return { owner: new Uint8Array(r.subarray(0, 64)), ownerPq: await pubkeyPq(device, 1, opts), pubPq: await pubkeyPq(device, 0, opts) };
   }
 
-  /* PICKUP: per link the link, then its head and (for a self-press) the reveal */
+  /* PICKUP: per link the link, then 32 zero bytes (the key never reveals a head: null here) and (for a self-press) the reveal */
   async function pickup(device, from, count, opts) {
     const rs = await edge(device, PICKUP, Buffer.concat([u32(from), Buffer.from([count])]), { ...opts, reports: count * 2 });
     const out = [];
     for (let i = 0; i < rs.length; i += 2) {
-      out.push({ link: new Uint8Array(rs[i]), head: new Uint8Array(rs[i + 1].subarray(0, 32)), reveal: new Uint8Array(rs[i + 1].subarray(32, 64)) });
+      const sent = new Uint8Array(rs[i + 1].subarray(0, 32));
+      out.push({ link: new Uint8Array(rs[i]), head: sent.every((x) => x === 0) ? null : sent, reveal: new Uint8Array(rs[i + 1].subarray(32, 64)) });
     }
     return out;
   }
@@ -1186,7 +1187,7 @@ module.exports = function register({ it }, ctx) {
       assert.ok(!checkpointVerifies(pub, h.seq, h.head, s, ownerPq, sigPq), 'the checkpoint\'s ML-DSA half verified under the owner key');
       /* PICKUP carries the link, never its head */
       const [last] = await pickup(device, h.seq, 1, { signal });
-      assert.ok(last.head.every((x) => x === 0), 'PICKUP revealed a head');
+      assert.equal(last.head, null, 'PICKUP revealed a head');
     });
 
   /*
