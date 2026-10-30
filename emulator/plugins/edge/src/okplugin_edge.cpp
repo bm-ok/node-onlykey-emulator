@@ -14,8 +14,9 @@
  *   4 the debt: every budget use owes a receipt, and while it is owed no TX start, budget
  *     opening or resume is accepted, until a receipt or a pressed SETTLE pays it - so at most
  *     one use is ever owed.
- * A second key, the owner key, signs a statement about this device for the host to show
- * which devices were made from the same OnlyKey secret.
+ * A second key, the owner key, certifies host subjects (a device's nametag, an agent identity)
+ * after a press or a budget's CERTIFY scope, so a host can tell which devices and identities were
+ * made from the same OnlyKey secret.
  *
  * Every byte matches the host library's format (node-onlykey-lib/edge codes.js, chain.js,
  * grants.js, receipts.js); comments name the library function a format must equal.
@@ -64,6 +65,12 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define OP_CONTINUE 16 /* the first link of a restored device's own chain, carrying the backup's debt */
 /* a touchless derive_secret a budget paid: slot 128, its label in the scope */
 #define OP_DERIVE 17
+/* a certification: the owner key signed a host subject (OKEDGE_CERTIFY) - pressed, or paid by a budget */
+#define OP_CERTIFY 18
+#define CERTIFY_SLOT 0
+/* how a certification was approved - byte 0 of what the owner key signs after the tag */
+#define APPROVED_BY_PRESS 1
+#define APPROVED_BY_BUDGET 2
 #define DERIVE_SLOT 128
 /* derive_secret's request (its okplugin_derive_secret.h, not included: edge needs no other plugin): mode || label hash */
 #define DERIVE_TOUCHLESS 1
@@ -261,7 +268,7 @@ static struct {
  * An OKEDGE request waiting for its physical press: opening a budget, resuming one, settling
  * the debt or accepting a loss. One at a time; a new one replaces it.
  */
-enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_SETTLE, PRESS_LOSS };
+enum { PRESS_GRANT = 1, PRESS_RESUME, PRESS_SETTLE, PRESS_LOSS, PRESS_CERTIFY };
 static struct {
   uint8_t what;
   unsigned long since;
@@ -282,6 +289,7 @@ static struct {
   uint16_t lifetime;          /* PRESS_GRANT: minutes, 0 = DEFAULT_LIFETIME_MIN */
   uint8_t labels[MAX_SCOPES][32]; /* PRESS_GRANT: the full labels of derived-code scopes, for the subject */
   uint8_t web;                /* the request came over WebAuthn: the answer made at the press is stored there */
+  uint8_t subject[32];        /* PRESS_CERTIFY: what the owner key signs at the press */
 } press;
 
 /* ------------------------------------------------------------ bytes and hashes */
@@ -315,7 +323,7 @@ static void H(uint8_t out[32], const char *tag, const uint8_t *a, size_t al,
  * answer. PICKUP over WebAuthn takes at most WEB_PICKUP_MAX links, so the collected answer stays under the 512-byte
  * poll chunk.
  *
- * An ML-DSA-65 signature does not fit one answer beside the replies before it (checkpoint, statement, a grant's
+ * An ML-DSA-65 signature does not fit one answer beside the replies before it (checkpoint, certification, a grant's
  * checkpoint): while collecting, mldsa_sign_reply() keeps what it would sign (web_more) instead, and OKEDGE_MORE signs
  * and stores it as an answer of its own. web_more holds only a digest this plugin computed for that answer; any other
  * request clears it.
@@ -497,7 +505,7 @@ static int edge_key_with(const struct edge_state *s, uint8_t priv[32]) {
 static int edge_private_key(uint8_t priv[32]) { return edge_key_with(&st, priv); }
 
 /*
- * THE ML-DSA-65 TWINS. Each P-256 signature Edge makes - a checkpoint, an owner statement - has an
+ * THE ML-DSA-65 TWINS. Each P-256 signature Edge makes - a checkpoint, an owner certification - has an
  * ML-DSA-65 signature beside it over the same digest (FIPS 204, pure, empty context), and a host
  * requires both: the pair holds while either algorithm does. The ML-DSA keys are derived like the
  * P-256 ones and never stored:
@@ -660,21 +668,39 @@ static void checkpoint(void) {
 }
 
 /*
- * The owner statement. The owner key is HKDF(K132, "onlykey/edge/owner/v1") with NO salt,
- * so it is the same on every device made from the same OnlyKey secret: a host holding one
- * device's owner public key can tell which other logs were made with the same secret, while
- * each device's salt stays on that device. The key signs only a statement about ITSELF - its
- * device id, its checkpoint key, its current seq - and the hash of a nametag the host gives.
- * No press and no link: it writes nothing. The signature proves the key, not the nametag.
- *   digest = SHA256("OKEDGE-STATEMENT-v1" || device id 16 || checkpoint pubkey 64 ||
- *                   SHA256(ML-DSA checkpoint pubkey) 32 || seq u32 LE || nametag hash 32)
- *                                                          (lib grants.statementDigest)
- * so the statement names both of this device's checkpoint keys.
- * reply: seq . nametag hash, then the owner public key (X || Y), then the P-256 signature,
+ * The owner key is HKDF(K132, "onlykey/edge/owner/v1") with NO salt, so it is the same on every
+ * device made from the same OnlyKey secret: a host holding one device's owner public key can tell
+ * which other logs were made with the same secret, while each device's salt stays on that device.
+ * It signs only through OKEDGE_CERTIFY.
+ */
+static int owner_pub(uint8_t pub[64]) {
+  uint8_t priv[32];
+  int ok = edge_secret_salted("onlykey/edge/owner/v1", NULL, priv) && uECC_compute_public_key(priv, pub, uECC_secp256r1());
+  memset(priv, 0, 32);
+  return ok;
+}
+
+/* OKEDGE_PUBKEY {which = 1}: the owner P-256 public key, no press, nothing signed */
+static void owner_pubkey_reply(void) {
+  uint8_t pub[64];
+  if (!ensure_identity() || !owner_pub(pub)) { status(EDGE_SIGN_FAILED); return; }
+  reply(pub, 64);
+}
+
+/*
+ * A certification: the owner key, both halves, signs a subject the host built - the firmware never
+ * learns what the subject is.
+ *   digest = SHA256("OKEDGE-CERTIFY-v1" || device id 16 || checkpoint pubkey 64 ||
+ *                   SHA256(ML-DSA checkpoint pubkey) 32 || approval u8 || seq u32 LE || subject 32)
+ *                                                          (lib grants.certifyDigest)
+ * approval: APPROVED_BY_PRESS or APPROVED_BY_BUDGET (a budget's CERTIFY scope paid it); the verifier
+ * decides which approvals a kind of subject accepts. Every certification is a link on the chain,
+ * written before this signs: seq is that link's, whose subject is this subject.
+ * reply: approval . seq . subject, then the owner public key (X || Y), then the P-256 signature,
  * then the owner's ML-DSA-65 signature (MLDSA_SIG_SIZE bytes) over the same digest.
  */
-static void statement(const uint8_t nametag_hash[32]) {
-  uint8_t who[ID_BYTES + 64 + 32], seq4[4], digest[32], priv[32], pub[64], sig[64], r[36];
+static void certify_sign(uint8_t approval, const uint8_t subject[32]) {
+  uint8_t who[ID_BYTES + 64 + 32], mid[5], digest[32], priv[32], pub[64], sig[64], r[37];
   memcpy(who, ident.device_id, ID_BYTES);
   memcpy(who + ID_BYTES, ident.pub, 64);
   int pq = mldsa_keypair(MLDSA_CHECKPOINT_KEY, large_resp_buffer);
@@ -682,16 +708,17 @@ static void statement(const uint8_t nametag_hash[32]) {
   if (pq) H(who + ID_BYTES + 64, NULL, large_resp_buffer, MLDSA_PK_SIZE, NULL, 0, NULL, 0);
   memset(large_resp_buffer, 0, MLDSA_PK_SIZE);
   if (!pq) { status(EDGE_SIGN_FAILED); return; }
-  put32(seq4, st.seq);
-  H(digest, "OKEDGE-STATEMENT-v1", who, sizeof(who), seq4, 4, nametag_hash, 32);
+  mid[0] = approval;
+  put32(mid + 1, st.seq);
+  H(digest, "OKEDGE-CERTIFY-v1", who, sizeof(who), mid, 5, subject, 32);
   int ok = edge_secret_salted("onlykey/edge/owner/v1", NULL, priv)
         && uECC_compute_public_key(priv, pub, uECC_secp256r1())
         && uECC_sign(priv, digest, 32, sig, uECC_secp256r1());
   memset(priv, 0, 32);
   if (!ok) { status(EDGE_SIGN_FAILED); return; }
-  memcpy(r, seq4, 4);
-  memcpy(r + 4, nametag_hash, 32);
-  reply(r, 36);
+  memcpy(r, mid, 5);
+  memcpy(r + 5, subject, 32);
+  reply(r, 37);
   reply(pub, 64);
   reply(sig, 64);
   if (!mldsa_sign_reply(MLDSA_OWNER_KEY, digest)) status(EDGE_SIGN_FAILED);
@@ -818,6 +845,8 @@ static int scope_allowed(uint8_t op, uint8_t slot) {
    * label is refused, as a derived code's). Never the touch derive, never the shared secret.
    */
   if (op == OP_DERIVE) return slot == DERIVE_SLOT;
+  /* a certification: the owner key over a host subject; which subjects a budget may certify is the verifier's rule */
+  if (op == OP_CERTIFY) return slot == CERTIFY_SLOT;
   return 0;
 }
 
@@ -922,6 +951,46 @@ static void press_wait(uint8_t what, const uint8_t subject[32]) {
   fadeon(EDGE_PRESS_COLOR);
   okcore_prime_user_confirmation(OKEDGE, 0, (uint8_t *)subject, 32);
 }
+
+/*
+ * OKEDGE_CERTIFY {subject 32}. Paid by a budget exactly as a sign is: announced by its TX start
+ * (this subject, after this head), a live budget with a CERTIFY scope, unlocked and nothing owed -
+ * then a self-press link spends the budget, reveals the next value of its series, carries the
+ * intent and owes a receipt, and the owner key signs at once (APPROVED_BY_BUDGET). Anything else
+ * waits for the physical press (certify_pressed); an announced certification no budget can pay
+ * spends its TX start.
+ */
+static uint8_t certify_intent[16];
+static void certify(const uint8_t subject[32]) {
+  state_load();
+  if (!ensure_identity()) { status(EDGE_NEED_PIN); return; }
+  if (started) {
+    uint8_t t[32];
+    H(t, "OKEDGE-TX-v1", st.head, 32, subject, 32, tx_intent, 16);
+    int announced = memcmp(t, tx_token, 32) == 0;
+    struct scope *sc;
+    int i = announced ? budget_for(OP_CERTIFY, CERTIFY_SLOT, NULL, &sc) : -1;
+    if (i >= 0) {
+      struct budget *b = &budgets[i];
+      uint8_t reveal[32];
+      b->used++;
+      sc->used++;
+      hash_times(reveal, b->seed, b->uses - b->used); /* v_i = H^(n-i)(seed) (lib grants.reveal) */
+      if (tx_has_intent) { memcpy(certify_intent, tx_intent, 16); next_intent = certify_intent; }
+      append_scoped(OP_CERTIFY, DECISION_SELF_PRESS, CERTIFY_SLOT, FLAG_OWES_RECEIPT | FLAG_BUDGET_SPENT, subject, b->id,
+                    b->used, (uint8_t)(sc - b->scopes + 1), reveal);
+      memset(reveal, 0, 32);
+      certify_sign(APPROVED_BY_BUDGET, subject);
+      return;
+    }
+    started = 0;
+    if (!announced && refused_tx < 255) refused_tx++;
+  }
+  press_drop();
+  memcpy(press.subject, subject, 32);
+  press_wait(PRESS_CERTIFY, subject);
+}
+
 
 /* GRANT_LABEL {scope index u8, label 32} - no press, no link; it only narrows the next GRANT_CREATE */
 static void grant_label(const uint8_t *buffer) {
@@ -1107,6 +1176,15 @@ static void loss_pressed(void) {
   reply_seq_head();
 }
 
+/*
+ * CERTIFY, at a press: one link - op = certify, decision approve, slot 0, the press flag, subject =
+ * the host's subject - then the owner key signs it (certify_sign, APPROVED_BY_PRESS) naming that link.
+ */
+static void certify_pressed(void) {
+  append(OP_CERTIFY, OKEDGE_DECISION_APPROVE, CERTIFY_SLOT, FLAG_PRESS_OBSERVED, press.subject, 0, 0, NULL);
+  certify_sign(APPROVED_BY_PRESS, press.subject);
+}
+
 /* ------------------------------------------------------------ hooks */
 
 /*
@@ -1206,6 +1284,7 @@ void okplugin_edge_decision(int decision) {
     else if (what == PRESS_RESUME) resume_pressed();
     else if (what == PRESS_SETTLE) settle_pressed();
     else if (what == PRESS_LOSS) loss_pressed();
+    else if (what == PRESS_CERTIFY) certify_pressed();
     press_drop();
     if (web) web_flush();
     fadeoff(85);
@@ -1433,7 +1512,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
       checkpoint();
       return;
     case OKEDGE_PUBKEY:
-      reply(ident.pub, 64);
+      if (buffer[6]) owner_pubkey_reply();
+      else reply(ident.pub, 64);
       return;
     case OKEDGE_PUBKEY_PQ:
       mldsa_pubkey_reply(buffer[6] ? MLDSA_OWNER_KEY : MLDSA_CHECKPOINT_KEY);
@@ -1448,8 +1528,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
       memset(digest, 0, 32);
       return;
     }
-    case OKEDGE_STATEMENT:
-      statement(buffer + 6);
+    case OKEDGE_CERTIFY:
+      certify(buffer + 6);
       return;
     case OKEDGE_GRANT_LABEL:
       grant_label(buffer);
