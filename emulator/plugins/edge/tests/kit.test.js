@@ -30,7 +30,8 @@ const PQ_PK = 1952;
 const PQ_SIG = 3309;
 const PQ_PK_REPORTS = Math.ceil(PQ_PK / 64);
 const PQ_SIG_REPORTS = Math.ceil(PQ_SIG / 64);
-const STATEMENT = 0x06;  /* {nametag hash 32}, no press, no link: seq . nametag hash, owner key, signature (2026-10-08) */
+const RETIRED_STATEMENT = 0x06; /* the no-press owner statement: answers as an unknown request */
+const CERTIFY = 0x08;    /* {subject 32}, a press (or a budget's CERTIFY scope): a link, then approval . seq . subject, owner key, both signatures */
 const LOSS = 0x34;
 const RETIRED_AGENT_ADD = 0x15; /* retired 2026-10-08: refused as unknown */
 const GRANT_CREATE = 0x10;
@@ -219,25 +220,32 @@ module.exports = function register({ it }, ctx) {
   }
 
   /*
-   * The owner statement (2026-10-08), checked with node:crypto alone (the kit's pinned lib
-   * predates it): SHA256("OKEDGE-STATEMENT-v1" || device id || checkpoint key || seq || nametag
-   * hash) signed with the OWNER key the reply carries; nametag hash = SHA256("OKEDGE-NAMETAG-v1" || text).
+   * A pressed certification of a nametag, checked with node:crypto alone (the kit's pinned lib predates it):
+   * SHA256("OKEDGE-CERTIFY-v1" || device id || checkpoint key || SHA256(ML-DSA checkpoint key) || approval ||
+   * seq || subject) signed with the OWNER key the reply carries; subject = SHA256("OKEDGE-NAMETAG-v1" || text).
    */
-  async function statementOf(device, nametag, opts) {
+  async function certifyOf(device, nametag, opts) {
     const nh = sha256(Buffer.concat([Buffer.from('OKEDGE-NAMETAG-v1'), Buffer.from(nametag, 'utf8')]));
     const pub = await pubkey(device, opts);
     const pubPq = await pubkeyPq(device, 0, opts);
     const ownerPq = await pubkeyPq(device, 1, opts);
-    const rs = await edge(device, STATEMENT, nh, { ...opts, reports: 3 + PQ_SIG_REPORTS });
+    const rs = await edge(device, CERTIFY, nh, { ...opts, press: true, reports: 3 + PQ_SIG_REPORTS });
     const [a, k, sg] = rs;
-    const seq = a.readUInt32LE(0);
+    const approval = a[0];
+    const seq = a.readUInt32LE(1);
     const owner = new Uint8Array(k.subarray(0, 64));
-    /* the statement names both of this device's checkpoint keys: the P-256 key, and the hash of its ML-DSA twin */
-    const message = Buffer.concat([Buffer.from('OKEDGE-STATEMENT-v1'), Buffer.from(deviceIdOf(pub)), Buffer.from(pub), sha256(Buffer.from(pubPq)), u32(seq), nh]);
+    /* the certification names both of this device's checkpoint keys: the P-256 key, and the hash of its ML-DSA twin */
+    const message = Buffer.concat([Buffer.from('OKEDGE-CERTIFY-v1'), Buffer.from(deviceIdOf(pub)), Buffer.from(pub), sha256(Buffer.from(pubPq)), Buffer.from([approval]), u32(seq), nh]);
     const key = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), Buffer.from(owner)]), format: 'der', type: 'spki' });
     const p256ok = crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(sg).subarray(0, 64));
     const pqOk = chain.mlDsaVerify(joined(rs.slice(3), PQ_SIG), sha256(message), ownerPq);
-    return { seq, echoed: Buffer.from(a.subarray(4, 36)).equals(nh), owner, ownerPq, ok: p256ok && pqOk, p256ok, pqOk, pub, pubPq };
+    return { approval, seq, subject: nh, echoed: Buffer.from(a.subarray(5, 37)).equals(nh), owner, ownerPq, ok: p256ok && pqOk, p256ok, pqOk, pub, pubPq };
+  }
+
+  /* the owner keys and the checkpoint ML-DSA key, READ - nothing signed, no link */
+  async function ownerKeysOf(device, opts) {
+    const [r] = await edge(device, PUBKEY, Buffer.from([1]), opts);
+    return { owner: new Uint8Array(r.subarray(0, 64)), ownerPq: await pubkeyPq(device, 1, opts), pubPq: await pubkeyPq(device, 0, opts) };
   }
 
   /* PICKUP: per link the link, then its head and (for a self-press) the reveal */
@@ -352,19 +360,27 @@ module.exports = function register({ it }, ctx) {
       if (h.seq === SEQ_NONE) assert.bytes(Buffer.from(h.head), Buffer.from(chain.genesis(deviceId)), 'an empty chain\'s head is not the genesis');
     });
 
-  it('edge: the owner statement - signed by an owner key that is not the checkpoint key, names its seq and nametag, writes no link (2026-10-08)',
+  it('edge: a certification - at a press, one link on the chain, signed by the owner key (not the checkpoint key) naming that link; the no-press statement is retired; the owner keys are read without signing',
     async ({ device, assert, signal, log }) => {
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      assert.equal(await edge(device, RETIRED_STATEMENT, Buffer.alloc(32, 1), { signal, text: true }), 'EDGE:0A', 'the no-press owner statement still answers');
       const before = await head(device, { signal });
-      const st = await statementOf(device, 'okt bench', { signal });
-      log(`statement at #${st.seq}, owner ${Buffer.from(st.owner).toString('hex').slice(0, 16)}…`);
-      assert.ok(st.ok, 'the statement does not verify under the owner key it carries');
-      assert.ok(st.echoed, 'the reply does not echo the nametag hash');
-      assert.equal(st.seq, before.seq === null ? 0xffffffff : before.seq, 'the statement does not name the key\'s own seq');
+      const st = await certifyOf(device, 'okt bench', { signal });
+      const after = await head(device, { signal });
+      log(`certified at #${st.seq}, owner ${Buffer.from(st.owner).toString('hex').slice(0, 16)}…`);
+      assert.ok(st.ok, 'the certification does not verify under the owner key it carries');
+      assert.ok(st.echoed, 'the reply does not echo the subject');
+      assert.equal(st.approval, 1, 'a pressed certification does not say it was pressed');
+      assert.equal(after.seq, before.seq === SEQ_NONE ? 0 : before.seq + 1, 'the certification did not write exactly one link');
+      assert.equal(st.seq, after.seq, 'the certification does not name its own link');
+      const [l] = await pickup(device, after.seq, 1, { signal });
+      const fl = chain.decodeLink(l.link);
+      assert.equal(JSON.stringify([fl.op, fl.decision, fl.slot, fl.flags]), JSON.stringify([18, 1, 0, 1]), 'the link is not a pressed certify');
+      assert.bytes(Buffer.from(fl.subject), Buffer.from(st.subject), 'the link does not carry the certified subject');
       assert.ok(!Buffer.from(st.owner).equals(Buffer.from(st.pub)), 'the owner key is the checkpoint key - it must carry no salt, the checkpoint key does');
-      assert.equal(JSON.stringify((await head(device, { signal })).seq), JSON.stringify(before.seq), 'the statement wrote a link');
-      const again = await statementOf(device, 'okt bench', { signal });
-      assert.ok(Buffer.from(again.owner).equals(Buffer.from(st.owner)), 'the owner key moved between two reads');
+      const read = await ownerKeysOf(device, { signal });
+      assert.ok(Buffer.from(read.owner).equals(Buffer.from(st.owner)), 'the owner key read is not the one that signed');
+      assert.equal((await head(device, { signal })).seq, after.seq, 'reading the owner keys wrote a link');
     });
 
   it('edge: an ordinary press writes no link and owes nothing, budget or not; a budget use owes its receipt - a timeout does not clear it, a late receipt pays it, a second is refused (R16, 2026-10-06)',
@@ -720,7 +736,7 @@ module.exports = function register({ it }, ctx) {
       }));
       log(`kept for the older-firmware restore: ${keep}`);
 
-      const stBefore = await statementOf(device, 'okt bench', { signal });
+      const stBefore = await ownerKeysOf(device, { signal });
       const ownerBefore = stBefore.owner;
       /* a link the backup does not have: lost with the restore - the continue link names the backup's head, not this one */
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
@@ -751,8 +767,8 @@ module.exports = function register({ it }, ctx) {
       assert.bytes(Buffer.from(fc.subject), want, 'the continue subject does not commit to the backup\'s chain, head and debt');
       assert.bytes(Buffer.from(c.head), Buffer.from(chain.weld(chain.genesis(id), c.link)), 'the continue is not welded onto the new device\'s genesis');
       /* the same OnlyKey secret: the owner key is the same before and after - that is how another device knows the log is yours */
-      const after2 = await statementOf(device, 'okt bench', { signal });
-      assert.ok(after2.ok && Buffer.from(after2.owner).equals(Buffer.from(ownerBefore)), 'the owner key changed with the restore - a restored key would no longer be recognised as yours');
+      const after2 = await ownerKeysOf(device, { signal });
+      assert.ok(Buffer.from(after2.owner).equals(Buffer.from(ownerBefore)), 'the owner key changed with the restore - a restored key would no longer be recognised as yours');
       assert.ok(Buffer.from(after2.ownerPq).equals(Buffer.from(stBefore.ownerPq)), 'the owner ML-DSA key changed with the restore');
       assert.ok(!Buffer.from(after2.pubPq).equals(Buffer.from(stBefore.pubPq)), 'the checkpoint ML-DSA key survived the restore - it must follow the new salt');
       await receipt(device, owedAtBackup.seq, 'okt: the carried debt paid on the new chain', { signal });
