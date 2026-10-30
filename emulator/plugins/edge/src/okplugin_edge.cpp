@@ -717,6 +717,19 @@ static void settle_subject(const struct edge_state *s, uint8_t out[32]) {
  *   - any other receipt pays its ref_seq (bytes 40-43), if that is the owed use.
  * The record is saved before the operation's result is released.
  */
+/*
+ * Event "edge_link" on each link stored: [0..3] its seq (u32 LE). Delivered by okemu_plugin_event(),
+ * provided by the soft key's host layer; absent on a hard key build (weak symbol), where nothing is sent.
+ * The host copies the key's links on this event instead of polling the head.
+ */
+extern "C" void okemu_plugin_event(const char *name, const uint8_t *data, int len) __attribute__((weak));
+static void link_written(uint32_t seq) {
+  if (!okemu_plugin_event) return;
+  uint8_t rec[4];
+  put32(rec, seq);
+  okemu_plugin_event("edge_link", rec, sizeof(rec));
+}
+
 static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const uint8_t *reveal) {
   uint8_t head[32], w[32];
   uint32_t seq = get32(link);
@@ -745,6 +758,7 @@ static int weld_in(struct edge_state *s, const uint8_t link[LINK_BYTES], const u
   if (s == &st) {
     state_save();
     hold(seq, link, head, reveal);
+    link_written(seq);
   }
   return 1;
 }
