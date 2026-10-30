@@ -142,6 +142,7 @@ module.exports = function register({ it }, ctx) {
   }
 
   /* HEAD: seq . (zeros: never the head) . oldest pickable seq . the live budget ids . held mask . owes . caps (59) */
+  const kitHead = (device, opts) => head(device, opts);
   async function head(device, opts) {
     const [r] = await edge(device, HEAD, null, opts);
     const ids = [0, 1, 2, 3].map((i) => r.readUInt32LE(40 + 4 * i));
@@ -1236,7 +1237,7 @@ module.exports = function register({ it }, ctx) {
         let edgeSvc = null;
         ctx.requireLib('node-onlykey-lib/plugins/edge')({ transport }, (err, s) => { if (err) throw err; edgeSvc = s.edge; });
         /* the phone holds the chain (its copy): here the kit's, which followed every link - the key never reveals its head */
-        const held = await head(device, { signal });
+        const held = await kitHead(device, { signal });
         edgeSvc.knownHead(held.seq, held.head, deviceIdOf(await pubkey(device, { signal })));
 
         /* the phone, in-process: a paired computer (no agent key since 2026-10-08 - the pairing says who), Yes, and the press the key waits for */
