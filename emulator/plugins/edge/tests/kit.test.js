@@ -1562,6 +1562,9 @@ module.exports = function register({ it }, ctx) {
 
         const SEEDED = /Generating random number of size = 32/g;
         const seeded = device.log.count(SEEDED);
+        /* this host holds the chain (the kit followed it): the head the key never reveals */
+        const held = await kitHead(device, { signal });
+        web.knownHead(held.seq, held.head, deviceIdOf(await pubkey(device, { signal })));
         const h = await web.head();
         const g = await web.grant({
           /* two uses: the second keeps the budget live for the unpaid label below (a spent budget refuses every TX start) */
