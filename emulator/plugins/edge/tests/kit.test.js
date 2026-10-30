@@ -382,6 +382,9 @@ module.exports = function register({ it }, ctx) {
   async function verifyFrom(device, from, fromHead, { signal, assert, log }) {
     const h = await head(device, { signal });
     const links = await pickup(device, from, h.seq - from + 1, { signal });
+    /* the key sends no heads: each is the weld from the head the kit started from, as a host's copy keeps them */
+    let at = fromHead;
+    for (const l of links) { at = chain.weld(at, l.link); l.head = at; }
     const result = chain.verify(links, { fromSeq: from, fromHead, expectHead: { seq: h.seq, head: h.head } });
     if (log) log(`library verdict: ${JSON.stringify({ ok: result.ok, through: result.verifiedThrough, failure: result.failure })}`);
     assert.ok(result.ok, `the library rejects the key's chain: ${JSON.stringify(result.failure)}`);
