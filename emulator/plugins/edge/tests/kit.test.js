@@ -1414,7 +1414,7 @@ module.exports = function register({ it }, ctx) {
       const want = sha256(Buffer.concat([Buffer.from('OKEDGE-CONTINUE-v1'), from.deviceId, u32(from.seq), from.head, ...seqs]));
       assert.bytes(Buffer.from(f.subject), want, 'the continue subject does not commit to the backup\'s chain, head and debts');
       assert.bytes(Buffer.from(h.head), Buffer.from(chain.weld(chain.genesis(id), c.link)), 'the continue is not welded onto this device\'s own genesis');
-      assert.bytes(Buffer.from(h.head), Buffer.from(c.head));
+      assert.equal(c.head, null, 'PICKUP revealed the continue link\'s head');
     });
 
   /*
