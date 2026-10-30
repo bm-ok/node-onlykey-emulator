@@ -375,11 +375,14 @@ static void reply(const uint8_t *data, int len) {
   send_transport_response(r, 64, to_web(), false);
 }
 
-/* seq . head: the answer of RECEIPT, SETTLE and LOSS - the head the next TX start must name */
+/*
+ * seq . 32 zero bytes: the answer of RECEIPT, SETTLE and LOSS. The head is never revealed: the host welds the link it
+ * picks up onto the head it holds, and names that head in its next TX start or proves it with PROVE_HEAD.
+ */
 static void reply_seq_head(void) {
   uint8_t r[36];
+  memset(r, 0, sizeof(r));
   put32(r, st.seq);
-  memcpy(r + 4, st.head, 32);
   reply(r, 36);
 }
 
@@ -647,21 +650,23 @@ static int ensure_identity(void) {
 }
 
 /*
- * The checkpoint: two signatures over (seq, head) (lib chain.checkpointDigest)
+ * The confirmation: two signatures over (seq, head) (lib chain.checkpointDigest)
  *   SHA256("OKEDGE-CKPT-v1" || device_id || seq (u32 LE) || head)
  * by the P-256 checkpoint key and its ML-DSA-65 twin.
- * reply: seq u32 . head 32; then the 64-byte P-256 signature; then the ML-DSA-65 signature
- * (MLDSA_SIG_SIZE bytes).
+ * reply: seq u32 . head 32 (show_head) or 32 zero bytes; then the 64-byte P-256 signature; then the
+ * ML-DSA-65 signature (MLDSA_SIG_SIZE bytes). The head is shown only to a host that proved it
+ * (PROVE_HEAD); a signature over a head the host does not hold verifies nothing for it.
  */
-static void checkpoint(void) {
+static void checkpoint(int show_head) {
   uint8_t seq4[4], digest[32], sig[64], priv[32], r[36];
   put32(seq4, st.seq);
   H(digest, "OKEDGE-CKPT-v1", ident.device_id, ID_BYTES, seq4, 4, st.head, 32);
   int ok = edge_private_key(priv) && uECC_sign(priv, digest, 32, sig, uECC_secp256r1());
   memset(priv, 0, 32);
   if (!ok) { status(EDGE_SIGN_FAILED); return; }
+  memset(r, 0, sizeof(r));
   memcpy(r, seq4, 4);
-  memcpy(r + 4, st.head, 32);
+  if (show_head) memcpy(r + 4, st.head, 32);
   reply(r, 36);
   reply(sig, 64);
   if (!mldsa_sign_reply(MLDSA_CHECKPOINT_KEY, digest)) status(EDGE_SIGN_FAILED);
@@ -1102,7 +1107,7 @@ static void grant_pressed(void) {
   memcpy(r + 6, press.b.genesis, 32);
   put32(r + 38, seq);
   reply(r, 42);
-  checkpoint();
+  checkpoint(0);
 }
 
 /* the press that lets a held budget pay again (refused while a receipt is owed) */
@@ -1469,15 +1474,14 @@ void okplugin_edge_recv(uint8_t *buffer) {
   switch (buffer[5]) {
     case OKEDGE_HEAD: {
       /*
-       * seq (SEQ_NONE = empty) . head (the genesis while empty) . oldest pickable seq .
+       * seq (SEQ_NONE = empty) . 32 zero bytes (the head is never revealed) . oldest pickable seq .
        * live budget ids x4 . held mask (bit i = budget i on hold) . owes (0 or 1) . 58 reserved 0 .
-       * 59 reserved 0 . 60 TX starts refused since power-up
+       * 59 capability bits . 60 TX starts refused since power-up
        */
       uint32_t oldest = SEQ_NONE;
       uint8_t mask = 0;
       for (int i = 0; i < HELD; i++) if (held[i].used && held[i].seq < oldest) oldest = held[i].seq;
       put32(r, st.seq);
-      memcpy(r + 4, st.head, 32);
       put32(r + 36, oldest);
       for (int i = 0; i < MAX_LIVE; i++) {
         int up = alive(&budgets[i]);
@@ -1486,12 +1490,13 @@ void okplugin_edge_recv(uint8_t *buffer) {
       }
       r[56] = mask;
       r[57] = st.owes;
+      r[59] = OKEDGE_CAPS_CERTIFY_HEADPROOF;
       r[60] = refused_tx;
       reply(r, 62);
       return;
     }
     case OKEDGE_PICKUP: {
-      /* from u32 . count u8 (<= 8); per link: the link, then its head + the reveal (zeros if none) */
+      /* from u32 . count u8 (<= 8); per link: the link, then 32 zero bytes (no head) + the reveal (zeros if none) */
       uint32_t from = get32(buffer + 6);
       uint8_t count = buffer[10] > HELD ? HELD : buffer[10];
       if (web_len >= 0 && count > WEB_PICKUP_MAX) { status(EDGE_BAD_RANGE); return; } /* over WebAuthn: one answer */
@@ -1502,14 +1507,16 @@ void okplugin_edge_recv(uint8_t *buffer) {
       for (uint32_t s = from; s < from + count; s++) {
         struct held_link *h = &held[s % HELD];
         reply(h->link, LINK_BYTES);
-        memcpy(r, h->head, 32);
+        memset(r, 0, 32);
         memcpy(r + 32, h->reveal, 32);
         reply(r, 64);
       }
       return;
     }
-    case OKEDGE_CHECKPOINT:
-      checkpoint();
+    case OKEDGE_PROVE_HEAD:
+      /* {seq u32, head 32}: the head the host computed from its copy; a match is the proof it holds the chain */
+      if (get32(buffer + 6) != st.seq || !head_is(buffer + 10, 32)) { status(EDGE_STALE_HEAD); return; }
+      checkpoint(1);
       return;
     case OKEDGE_PUBKEY:
       if (buffer[6]) owner_pubkey_reply();

@@ -22,7 +22,8 @@ const crypto = require('crypto');
 const OKEDGE = 0x80 | 0x78;
 const HEAD = 0x01;
 const PICKUP = 0x02;
-const CHECKPOINT = 0x03;
+const RETIRED_CHECKPOINT = 0x03; /* answers as unknown: the key confirms only a head a host proves */
+const PROVE_HEAD = 0x09; /* {seq u32, head 32}: on a match, seq . head, then both checkpoint signatures */
 const PUBKEY = 0x04;
 const PUBKEY_PQ = 0x05; /* {which: 0 checkpoint key, 1 owner key}: an ML-DSA-65 public key */
 /* ML-DSA-65 sizes and their 64-byte reports */
@@ -105,23 +106,63 @@ module.exports = function register({ it }, ctx) {
   /* the device id is edge JS's to compute: SHA256("OKEDGE-DEVICE-v1" || the Edge public key)[0..16] */
   const deviceIdOf = (pub) => new Uint8Array(sha256(Buffer.concat([Buffer.from('OKEDGE-DEVICE-v1'), Buffer.from(pub)])).subarray(0, 16));
 
-  /* HEAD: seq . head . oldest pickable seq . the live budget ids . held mask . owes (0 or 1) */
+  /*
+   * The key never reveals its head: the kit welds it, as every host must - from the genesis (a chain from #0, or a
+   * restored device's continue link) through every link it picks up. One welded head per device id; the kit reads HEAD
+   * often enough never to fall behind the key's ring of 8 links.
+   */
+  const welded = new Map();
+  async function weldedHead(device, seq, oldest, opts) {
+    const id = deviceIdOf(await pubkey(device, opts));
+    const k = Buffer.from(id).toString('hex');
+    if (seq === SEQ_NONE) { welded.set(k, { seq, head: chain.genesis(id) }); return chain.genesis(id); }
+    let w = welded.get(k);
+    if (w && w.seq !== SEQ_NONE && w.seq > seq) w = null;
+    let next;
+    let at;
+    if (w && w.seq !== SEQ_NONE) {
+      next = w.seq + 1;
+      at = w.head;
+    } else {
+      next = w ? 0 : oldest;
+      at = chain.genesis(id);
+      if (!w && oldest !== 0) {
+        const [first] = await pickup(device, oldest, 1, opts);
+        if (chain.decodeLink(first.link).op !== 16) throw new Error(`the kit never saw chain ${k.slice(0, 8)} from its start (#${oldest})`);
+      }
+    }
+    if (next < oldest) throw new Error(`the kit fell behind the key's ring: #${next} is gone (oldest #${oldest})`);
+    while (next <= seq) {
+      const n = Math.min(8, seq - next + 1);
+      for (const l of await pickup(device, next, n, opts)) at = chain.weld(at, l.link);
+      next += n;
+    }
+    welded.set(k, { seq, head: at });
+    return at;
+  }
+
+  /* HEAD: seq . (zeros: never the head) . oldest pickable seq . the live budget ids . held mask . owes . caps (59) */
   async function head(device, opts) {
     const [r] = await edge(device, HEAD, null, opts);
     const ids = [0, 1, 2, 3].map((i) => r.readUInt32LE(40 + 4 * i));
+    const seq = r.readUInt32LE(0);
+    const oldest = r.readUInt32LE(36);
     return {
-      seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)), oldest: r.readUInt32LE(36),
+      seq, head: await weldedHead(device, seq, oldest, opts), keyHead: new Uint8Array(r.subarray(4, 36)), caps: r[59], oldest,
       live: ids.filter(Boolean), held: ids.filter((id, i) => id && (r[56] >> i) & 1), owed: r[57],
       refusedTx: r[60], /* B7 stage 2: TX starts refused since power-up (RAM only) */
     };
   }
 
-  /* RECEIPT and SETTLE answer seq . head - what the next TX start passes (R13a) */
+  /* RECEIPT and SETTLE answer seq . 32 zero bytes - the kit welds the head the next TX start passes (R13a) */
   const seqHead = (r) => ({ seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)) });
 
   async function receipt(device, ref, msg, opts) {
     const [r] = await edge(device, RECEIPT, Buffer.concat([u32(ref), Buffer.from([0x00]), sha256(Buffer.from(msg))]), opts);
-    return seqHead(r);
+    const { seq } = seqHead(r);
+    const h = await head(device, opts);
+    if (h.seq !== seq) throw new Error(`RECEIPT answered #${seq}, HEAD says #${h.seq}`);
+    return { seq, head: h.head };
   }
 
   /*
@@ -765,7 +806,7 @@ module.exports = function register({ it }, ctx) {
       assert.equal(JSON.stringify([fc.op, fc.grantId, fc.flags]), JSON.stringify([16, 1, 0]), 'the first link is not a continue carrying one debt');
       const want = sha256(Buffer.concat([Buffer.from('OKEDGE-CONTINUE-v1'), Buffer.from(backupDeviceId), u32(atBackup.seq), Buffer.from(atBackup.head), u32(owedAtBackup.seq)]));
       assert.bytes(Buffer.from(fc.subject), want, 'the continue subject does not commit to the backup\'s chain, head and debt');
-      assert.bytes(Buffer.from(c.head), Buffer.from(chain.weld(chain.genesis(id), c.link)), 'the continue is not welded onto the new device\'s genesis');
+      assert.bytes(Buffer.from(h.head), Buffer.from(chain.weld(chain.genesis(id), c.link)), 'the continue is not welded onto the new device\'s genesis');
       /* the same OnlyKey secret: the owner key is the same before and after - that is how another device knows the log is yours */
       const after2 = await ownerKeysOf(device, { signal });
       assert.ok(Buffer.from(after2.owner).equals(Buffer.from(ownerBefore)), 'the owner key changed with the restore - a restored key would no longer be recognised as yours');
@@ -1121,8 +1162,15 @@ module.exports = function register({ it }, ctx) {
       assert.equal(pubPq.length, PQ_PK);
       assert.ok(!Buffer.from(pubPq).equals(Buffer.from(ownerPq)), 'the checkpoint key and the owner key are the same ML-DSA key');
       const t0 = Date.now();
-      const rs = await edge(device, CHECKPOINT, null, { signal, reports: 2 + PQ_SIG_REPORTS });
-      log(`the hybrid checkpoint: ${rs.length} reports in ${Date.now() - t0} ms`);
+      /* the key gives no head and no free checkpoint: HEAD's head bytes are zero, CHECKPOINT is unknown */
+      assert.ok(h.keyHead.every((x) => x === 0), 'HEAD revealed the head');
+      assert.equal(h.caps & 1, 1, 'HEAD byte 59 does not say CERTIFY_HEADPROOF');
+      assert.equal(await edge(device, RETIRED_CHECKPOINT, null, { signal, text: true }), 'EDGE:0A', 'CHECKPOINT still answers');
+      /* a head the kit did not weld is refused; the welded one is confirmed */
+      const wrong = Buffer.from(h.head); wrong[0] ^= 1;
+      assert.equal(await edge(device, PROVE_HEAD, Buffer.concat([u32(h.seq), wrong]), { signal, text: true }), 'EDGE:0B', 'a wrong head was confirmed');
+      const rs = await edge(device, PROVE_HEAD, Buffer.concat([u32(h.seq), Buffer.from(h.head)]), { signal, reports: 2 + PQ_SIG_REPORTS });
+      log(`the hybrid confirmation: ${rs.length} reports in ${Date.now() - t0} ms`);
       const [c, s] = rs;
       const sigPq = joined(rs.slice(2), PQ_SIG);
       assert.ok(checkpointVerifies(pub, h.seq, h.head, s, pubPq, sigPq), 'the checkpoint does not verify (both halves)');
@@ -1134,9 +1182,9 @@ module.exports = function register({ it }, ctx) {
       const bad = Uint8Array.from(sigPq); bad[100] ^= 1;
       assert.ok(!checkpointVerifies(pub, h.seq, h.head, s, pubPq, bad), 'a checkpoint with a broken ML-DSA half verified');
       assert.ok(!checkpointVerifies(pub, h.seq, h.head, s, ownerPq, sigPq), 'the checkpoint\'s ML-DSA half verified under the owner key');
-      /* the latest link is still held for pickup, and its weld is the signed head */
+      /* PICKUP carries the link, never its head */
       const [last] = await pickup(device, h.seq, 1, { signal });
-      assert.bytes(Buffer.from(last.head), Buffer.from(h.head));
+      assert.ok(last.head.every((x) => x === 0), 'PICKUP revealed a head');
     });
 
   /*
@@ -1351,7 +1399,7 @@ module.exports = function register({ it }, ctx) {
       const seqs = from.owed.map((n) => u32(n));
       const want = sha256(Buffer.concat([Buffer.from('OKEDGE-CONTINUE-v1'), from.deviceId, u32(from.seq), from.head, ...seqs]));
       assert.bytes(Buffer.from(f.subject), want, 'the continue subject does not commit to the backup\'s chain, head and debts');
-      assert.bytes(Buffer.from(c.head), Buffer.from(chain.weld(chain.genesis(id), c.link)), 'the continue is not welded onto this device\'s own genesis');
+      assert.bytes(Buffer.from(h.head), Buffer.from(chain.weld(chain.genesis(id), c.link)), 'the continue is not welded onto this device\'s own genesis');
       assert.bytes(Buffer.from(h.head), Buffer.from(c.head));
     });
 

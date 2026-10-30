@@ -16,12 +16,15 @@
 /* OKEDGE sub-ops (recv_buffer[5]) */
 #define OKEDGE_HEAD 0x01
 #define OKEDGE_PICKUP 0x02
-#define OKEDGE_CHECKPOINT 0x03
+/* 0x03 is unassigned: the key confirms a head only after a host proves it (OKEDGE_PROVE_HEAD) */
 #define OKEDGE_PUBKEY 0x04        /* {which: 0 checkpoint key, 1 owner key}, no press: a P-256 public key X || Y */
 #define OKEDGE_PUBKEY_PQ 0x05     /* {which: 0 checkpoint key, 1 owner key}, no press: an ML-DSA-65 public key */
 /* 0x06 is unassigned: the owner key signs only through OKEDGE_CERTIFY */
 #define OKEDGE_MORE 0x07          /* over WebAuthn only, no press: the ML-DSA-65 signature the last answer left out */
 #define OKEDGE_CERTIFY 0x08       /* {subject 32}: a press, or a budget's CERTIFY scope after its TX start - a link, then the owner key signs the subject */
+#define OKEDGE_PROVE_HEAD 0x09    /* {seq u32, head 32}, no press, no link: the host's head matches the key's - then the confirmation (both checkpoint signatures) */
+/* HEAD byte 59: what this firmware does - hosts send the newer requests only when the bit is set */
+#define OKEDGE_CAPS_CERTIFY_HEADPROOF 0x01 /* CERTIFY, PUBKEY {which}, PROVE_HEAD; the head is never revealed */
 #define OKEDGE_GRANT_CREATE 0x10  /* a press: opens a budget */
 #define OKEDGE_GRANT_LABEL 0x11   /* {scope index, label 32}, no press: a derived identity's label for the next GRANT_CREATE */
 #define OKEDGE_GRANT_REVOKE 0x12  /* no press: ends a live budget */
