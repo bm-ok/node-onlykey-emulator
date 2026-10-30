@@ -494,9 +494,11 @@ module.exports = function register({ it }, ctx) {
        *   SHA256("OKEDGE-GRANT-v1" || scopes || reason_hash || G || lifetime)
        */
       assert.equal(b.ckpt.readUInt32LE(0), b.chainSeq, 'the checkpoint is not over the grant-create link');
-      assert.ok(checkpointVerifies(pub, b.chainSeq, b.ckpt.subarray(4, 36), b.sig, await pubkeyPq(device, 0, { signal }), b.sigPq), 'the opening checkpoint does not verify (both halves)');
+      /* it carries no head: the host welds the grant link onto the head it held, and only that head verifies */
+      assert.ok(b.ckpt.subarray(4, 36).every((x) => x === 0), 'the opening confirmation revealed the head');
       const [opened] = await pickup(device, b.chainSeq, 1, { signal });
-      assert.bytes(Buffer.from(chain.weld(before.head, opened.link)), b.ckpt.subarray(4, 36), 'the signed head is not this link welded on');
+      const openedHead = chain.weld(before.head, opened.link);
+      assert.ok(checkpointVerifies(pub, b.chainSeq, openedHead, b.sig, await pubkeyPq(device, 0, { signal }), b.sigPq), 'the opening checkpoint does not verify over the welded head (both halves)');
       const scopesEnc = Buffer.from([1, OP_SIGN, 222, 2, 0]);
       /* ... and (R11a) ends with the derived scope's full label: the identity the person approved */
       const wantSubject = sha256(Buffer.concat([Buffer.from('OKEDGE-GRANT-v1'), scopesEnc, b.reasonHash, Buffer.from(b.G), Buffer.from([0, 0]), OKT_LABEL]));
