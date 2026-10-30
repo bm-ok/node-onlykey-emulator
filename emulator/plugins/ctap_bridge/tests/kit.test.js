@@ -90,7 +90,16 @@ module.exports = function register({ it }, ctx) {
       const opts = { confirm, timeoutMs: 60000 };
       /* the bucket key (v2): derive_secret's derive of the identity's label under the site this key names, over the tunnel */
       const { site } = await okcrypto.keySite();
-      const bucketKey = await bid.deriveBucketKeyAt(okcrypto, publicKey, site, opts);
+      /* a derive primes no X-Wing challenge: its code is entered once the key has had a moment to start (derive_secret's tests) */
+      const deriveOpts = {
+        timeoutMs: 60000,
+        confirm: async ({ digits }) => {
+          log(`the code the host shows for the derive: ${digits.join(' ')}`);
+          await device.sleep(1500, { signal });
+          device.pressLine(digits);
+        },
+      };
+      const bucketKey = await bid.deriveBucketKeyAt(okcrypto, publicKey, site, deriveOpts);
       const hex = (b) => Buffer.from(b).toString('hex');
       log(`bucket key made (derive_secret under ${site}, over the tunnel): public ${hex(bucketKey.publicKey).slice(0, 16)}`);
       before = device.log.count(PRIMED);
