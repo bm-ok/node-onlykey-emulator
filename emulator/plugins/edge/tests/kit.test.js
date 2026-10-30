@@ -216,12 +216,16 @@ module.exports = function register({ it }, ctx) {
       const staged = await edge(device, GRANT_LABEL, Buffer.concat([Buffer.from([j]), list[j].label || OKT_LABEL]), { signal, text: true });
       if (staged !== 'EDGE:00') throw new Error(`GRANT_LABEL ${j} answered ${staged}`);
     }
-    const req = grantRequest(scopes, reasonHash, (await head(device, { signal })).head, lifetime);
+    const before = (await head(device, { signal })).head;
+    const req = grantRequest(scopes, reasonHash, before, lifetime);
     const rs = await edge(device, GRANT_CREATE, req, { signal, press: true, reports: 3 + PQ_SIG_REPORTS });
     const [g, ckpt, s] = rs;
+    /* the opening link's head: the kit welds it onto the head it opened on (the key sends none) */
+    const [opening] = await pickup(device, g.readUInt32LE(38), 1, { signal });
     return {
       grantId: g.readUInt32LE(0), uses: g.readUInt16LE(4), G: new Uint8Array(g.subarray(6, 38)),
       chainSeq: g.readUInt32LE(38), ckpt, sig: new Uint8Array(s.subarray(0, 64)), sigPq: joined(rs.slice(3), PQ_SIG), reasonHash,
+      openedHead: chain.weld(before, opening.link),
     };
   }
 
@@ -619,7 +623,7 @@ module.exports = function register({ it }, ctx) {
 
       /* from the grant-create link on, welded and checked by the library */
       const [opened] = await pickup(device, b.chainSeq, 1, { signal });
-      const { fields } = await verifyFrom(device, b.chainSeq + 1, opened.head, { signal, assert });
+      const { fields } = await verifyFrom(device, b.chainSeq + 1, b.openedHead, { signal, assert });
       const ops = fields;
       log(trail(ops));
       const hold = ops.find((x) => x.op === OP_GRANT_HOLD);
