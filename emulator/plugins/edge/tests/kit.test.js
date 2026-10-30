@@ -1508,6 +1508,17 @@ module.exports = function register({ it }, ctx) {
         const usbEnd = await head(device, { signal });
         assert.bytes(Buffer.from(end.head), Buffer.from(usbEnd.head), 'the chain over WebAuthn and over USB end at different heads');
         log(`over WebAuthn: HEAD, GRANT_CREATE + press (checkpoint + ML-DSA), TX start, a paid sign, RECEIPT, PICKUP of ${count} - head #${end.seq}`);
+
+        /* a CERTIFY over WebAuthn (the web app's nametag and login card): the press, its link, both owner signatures - the ML-DSA half through SUB.MORE */
+        const certSubject = new Uint8Array(sha256(Buffer.from('okt: certify over webauthn')));
+        const beforeCert = await web.head();
+        const cert = await web.certify(certSubject, { onPress: () => { device.sleep(1500, { signal }).then(() => device.press(1), () => {}); } });
+        const afterCert = await web.head();
+        assert.equal(afterCert.seq, beforeCert.seq + 1, 'CERTIFY over WebAuthn did not write exactly one link');
+        assert.equal(cert.seq, afterCert.seq, 'CERTIFY over WebAuthn does not name its own link');
+        assert.equal(cert.approval, 1, 'CERTIFY over WebAuthn: not a pressed certification');
+        assert.ok(grants.verifyCertification({ ...cert, subject: certSubject }, cert.ownerKey, cert.ownerKeyPq), 'CERTIFY over WebAuthn: P-256 and ML-DSA-65 (SUB.MORE) do not both verify');
+        log(`certify over WebAuthn: link #${cert.seq}, both owner signatures`);
       } finally {
         await app.destroy();
       }
