@@ -59,7 +59,7 @@ module.exports = function register({ it }, ctx) {
    * key (agent X25519 ECDH) and its certificate (agent Ed25519 sign), each answered with the code the lib works out
    * from the bytes it sent - the code the web app shows. The certificate must verify.
    */
-  it('ctap_bridge: the bucket key over the tunnel - agent public key, ECDH and sign, each with its code', async ({ device, assert, signal, log }) => {
+  it('ctap_bridge: the bucket key over the tunnel - agent public key, the derive under the site the key names and sign, each with its code', async ({ device, assert, signal, log }) => {
     await device.restart({ signal });
     await device.unlock(ctx.PINS.primary, { signal });
     const Rectify = ctx.requireLib('@bmatusiak/rectify');
@@ -88,13 +88,11 @@ module.exports = function register({ it }, ctx) {
         device.pressLine(digits);
       };
       const opts = { confirm, timeoutMs: 60000 };
-      const bucketKey = await bid.deriveBucketKey(okcrypto, publicKey, opts);
+      /* the bucket key (v2): derive_secret's derive of the identity's label under the site this key names, over the tunnel */
+      const { site } = await okcrypto.keySite();
+      const bucketKey = await bid.deriveBucketKeyAt(okcrypto, publicKey, site, opts);
       const hex = (b) => Buffer.from(b).toString('hex');
-      /* what a firmware change to X25519 (patch 0014) would move: these, compared across builds on one key */
-      log(`bucket key made (agent X25519 ECDH over the tunnel): public ${hex(bucketKey.publicKey).slice(0, 16)}`);
-      const x25519 = await okcrypto.agent.publicKey(ctx.requireLib('node-onlykey-lib/bucket').bucketIdentity.KEY_LABEL
-        ? require('crypto').createHash('sha256').update(bid.KEY_LABEL).digest() : new Uint8Array(32), { keyType: 4 });
-      log(`agent X25519 public key (the bucket key's peer label): ${hex(x25519).slice(0, 16)}`);
+      log(`bucket key made (derive_secret under ${site}, over the tunnel): public ${hex(bucketKey.publicKey).slice(0, 16)}`);
       before = device.log.count(PRIMED);
       const certificate = await bid.certify(okcrypto, publicKey, bucketKey.publicKey, opts);
       assert.ok(bid.verifyCertificate({ identityPublicKey: publicKey, bucketPublicKey: bucketKey.publicKey, certificate }),
