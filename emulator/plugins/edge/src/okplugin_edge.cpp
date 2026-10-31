@@ -29,6 +29,9 @@
  */
 #include "core_pins.h" /* millis() */
 #include "onlykey.h"
+#ifdef DEBUG /* defined by the firmware's own headers, so tested after onlykey.h */
+#include "Arduino.h" /* Serial: the debug console */
+#endif
 #include "okplugin_edge.h"
 #include "sha256.h"
 #include "uECC.h"
@@ -347,8 +350,8 @@ static void web_flush(void) {
 
 /* "EDGE:xx" - the only text the plugin sends (okplugin_edge.h lists the codes) */
 static void status(uint8_t code) {
-  static const char HEX[] = "0123456789ABCDEF";
-  char s[8] = {'E', 'D', 'G', 'E', ':', HEX[code >> 4], HEX[code & 0x0f], 0};
+  static const char DIGITS[] = "0123456789ABCDEF";
+  char s[8] = {'E', 'D', 'G', 'E', ':', DIGITS[code >> 4], DIGITS[code & 0x0f], 0};
   if (web_len >= 0) web_len = 0;
   hidprint(s);
 }
@@ -955,6 +958,9 @@ static void press_wait(uint8_t what, const uint8_t subject[32]) {
   press.web = to_web();
   fadeon(EDGE_PRESS_COLOR);
   okcore_prime_user_confirmation(OKEDGE, 0, (uint8_t *)subject, 32);
+#ifdef DEBUG
+  Serial.println("Edge: waiting for a press");
+#endif
 }
 
 /*
