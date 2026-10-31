@@ -20,17 +20,18 @@
 #define OKEDGE_PUBKEY 0x04        /* {which: 0 checkpoint key, 1 owner key}, no press: a P-256 public key X || Y */
 #define OKEDGE_PUBKEY_PQ 0x05     /* {which: 0 checkpoint key, 1 owner key}, no press: an ML-DSA-65 public key */
 /* 0x06 is unassigned: the owner key signs only through OKEDGE_CERTIFY */
-#define OKEDGE_MORE 0x07          /* over WebAuthn only, no press: the ML-DSA-65 signature the last answer left out */
+#define OKEDGE_MORE 0x07          /* over WebAuthn only, no press: the oldest ML-DSA-65 signature the last answer left out (up to two) */
 #define OKEDGE_CERTIFY 0x08       /* {subject 32}: a press, or a budget's CERTIFY scope after its TX start - a link, then the owner key signs the subject */
 #define OKEDGE_PROVE_HEAD 0x09    /* {seq u32, head 32}, no press, no link: the host's head matches the key's - then the confirmation (both checkpoint signatures) */
 /* HEAD byte 59: what this firmware does - hosts send the newer requests only when the bit is set */
 #define OKEDGE_CAPS_CERTIFY_HEADPROOF 0x01 /* CERTIFY, PUBKEY {which}, PROVE_HEAD; the head is never revealed */
+#define OKEDGE_CAPS_OPS_CHECKPOINT 0x02   /* RECEIPT and CERTIFY end with a checkpoint (checkpoint(0)); OKEDGE_MORE takes up to two */
 #define OKEDGE_GRANT_CREATE 0x10  /* a press: opens a budget */
 #define OKEDGE_GRANT_LABEL 0x11   /* {scope index, label 32}, no press: a derived identity's label for the next GRANT_CREATE */
 #define OKEDGE_GRANT_REVOKE 0x12  /* no press: ends a live budget */
 #define OKEDGE_GRANT_HOLD 0x13    /* no press: a live budget pays for nothing until resumed */
 #define OKEDGE_GRANT_RESUME 0x14  /* a press: a held budget pays again */
-#define OKEDGE_RECEIPT 0x20       /* replies seq . head; the last open use of a budget ends it (completed) */
+#define OKEDGE_RECEIPT 0x20       /* replies a checkpoint (seq, zeros, its signatures); the last open use of a budget ends it (completed) */
 #define OKEDGE_SETTLE 0x21        /* a press: ends every live budget, then clears the owed receipt; replies seq . head */
 #define OKEDGE_TX_START 0x22      /* {token 32, intent 16}: starts one budget self-press */
 #define OKEDGE_LOSS 0x34          /* {from, to}, a press: records a range of links as lost */

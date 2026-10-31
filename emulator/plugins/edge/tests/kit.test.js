@@ -155,15 +155,19 @@ module.exports = function register({ it }, ctx) {
     };
   }
 
-  /* RECEIPT and SETTLE answer seq . 32 zero bytes - the kit welds the head the next TX start passes (R13a) */
+  /* SETTLE answers seq . 32 zero bytes - the kit welds the head the next TX start passes (R13a) */
   const seqHead = (r) => ({ seq: r.readUInt32LE(0), head: new Uint8Array(r.subarray(4, 36)) });
 
+  /*
+   * RECEIPT answers a checkpoint (OKEDGE_CAPS_OPS_CHECKPOINT): seq . 32 zero bytes - the same first report as before -
+   * then the P-256 signature and the ML-DSA-65 twin over (seq, head). The kit welds the head and keeps the signatures.
+   */
   async function receipt(device, ref, msg, opts) {
-    const [r] = await edge(device, RECEIPT, Buffer.concat([u32(ref), Buffer.from([0x00]), sha256(Buffer.from(msg))]), opts);
-    const { seq } = seqHead(r);
+    const rs = await edge(device, RECEIPT, Buffer.concat([u32(ref), Buffer.from([0x00]), sha256(Buffer.from(msg))]), { ...opts, reports: 2 + PQ_SIG_REPORTS });
+    const { seq, head: zeros } = seqHead(rs[0]);
     const h = await head(device, opts);
     if (h.seq !== seq) throw new Error(`RECEIPT answered #${seq}, HEAD says #${h.seq}`);
-    return { seq, head: h.head };
+    return { seq, head: h.head, ckpt: { zeros, sig: new Uint8Array(rs[1].subarray(0, 64)), sigPq: joined(rs.slice(2), PQ_SIG) } };
   }
 
   /*
@@ -275,8 +279,11 @@ module.exports = function register({ it }, ctx) {
     const pub = await pubkey(device, opts);
     const pubPq = await pubkeyPq(device, 0, opts);
     const ownerPq = await pubkeyPq(device, 1, opts);
-    const rs = await edge(device, CERTIFY, nh, { ...opts, press: true, reports: 3 + PQ_SIG_REPORTS });
+    /* the certification (3 + its ML-DSA half), then a checkpoint at its link (seq . zeros, P-256, ML-DSA) */
+    const rs = await edge(device, CERTIFY, nh, { ...opts, press: true, reports: 3 + PQ_SIG_REPORTS + 2 + PQ_SIG_REPORTS });
     const [a, k, sg] = rs;
+    const c = 3 + PQ_SIG_REPORTS;
+    const ckpt = { seq: rs[c].readUInt32LE(0), zeros: new Uint8Array(rs[c].subarray(4, 36)), sig: new Uint8Array(rs[c + 1].subarray(0, 64)), sigPq: joined(rs.slice(c + 2), PQ_SIG) };
     const approval = a[0];
     const seq = a.readUInt32LE(1);
     const owner = new Uint8Array(k.subarray(0, 64));
@@ -284,8 +291,8 @@ module.exports = function register({ it }, ctx) {
     const message = Buffer.concat([Buffer.from('OKEDGE-CERTIFY-v1'), Buffer.from(deviceIdOf(pub)), Buffer.from(pub), sha256(Buffer.from(pubPq)), Buffer.from([approval]), u32(seq), nh]);
     const key = crypto.createPublicKey({ key: Buffer.concat([P256_SPKI, Buffer.from([4]), Buffer.from(owner)]), format: 'der', type: 'spki' });
     const p256ok = crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, Buffer.from(sg).subarray(0, 64));
-    const pqOk = chain.mlDsaVerify(joined(rs.slice(3), PQ_SIG), sha256(message), ownerPq);
-    return { approval, seq, subject: nh, echoed: Buffer.from(a.subarray(5, 37)).equals(nh), owner, ownerPq, ok: p256ok && pqOk, p256ok, pqOk, pub, pubPq };
+    const pqOk = chain.mlDsaVerify(joined(rs.slice(3, c), PQ_SIG), sha256(message), ownerPq);
+    return { approval, seq, subject: nh, echoed: Buffer.from(a.subarray(5, 37)).equals(nh), owner, ownerPq, ok: p256ok && pqOk, p256ok, pqOk, pub, pubPq, ckpt };
   }
 
   /* the owner keys and the checkpoint ML-DSA key, READ - nothing signed, no link */
@@ -423,6 +430,10 @@ module.exports = function register({ it }, ctx) {
       assert.equal(st.approval, 1, 'a pressed certification does not say it was pressed');
       assert.equal(after.seq, before.seq === SEQ_NONE ? 0 : before.seq + 1, 'the certification did not write exactly one link');
       assert.equal(st.seq, after.seq, 'the certification does not name its own link');
+      /* and a checkpoint at that link: its seq, no head shown, both halves verifying over the head the kit welds */
+      assert.equal(st.ckpt.seq, after.seq, 'the certification\'s checkpoint is not at its link');
+      assert.ok(st.ckpt.zeros.every((b) => b === 0), 'the certification\'s checkpoint shows the head');
+      assert.ok(checkpointVerifies(st.pub, st.ckpt.seq, after.head, st.ckpt.sig, st.pubPq, st.ckpt.sigPq), 'the certification\'s checkpoint does not verify (P-256 and ML-DSA-65) over the welded head');
       const [l] = await pickup(device, after.seq, 1, { signal });
       const fl = chain.decodeLink(l.link);
       assert.equal(JSON.stringify([fl.op, fl.decision, fl.slot, fl.flags]), JSON.stringify([18, 1, 0, 1]), 'the link is not a pressed certify');
@@ -467,6 +478,10 @@ module.exports = function register({ it }, ctx) {
       const msg = 'okt: paid use 1';
       const t = await receipt(device, paid.seq, msg, { signal });
       assert.equal(t.seq, afterTimeout.seq + 1, 'the receipt reply is not the receipt link\'s seq');
+      /* the receipt is a checkpoint: no head shown, both halves verifying over the head the kit welds */
+      assert.ok(t.ckpt.zeros.every((b) => b === 0), 'the receipt shows the head');
+      assert.ok(checkpointVerifies(await pubkey(device, { signal }), t.seq, t.head, t.ckpt.sig, await pubkeyPq(device, 0, { signal }), t.ckpt.sigPq),
+        'the receipt\'s checkpoint does not verify (P-256 and ML-DSA-65) over the welded head');
       const again = await edge(device, RECEIPT, Buffer.concat([u32(paid.seq), Buffer.from([0]), sha256(Buffer.from(msg))]), { signal, text: true });
       assert.equal(again, 'EDGE:08', 'a second receipt for one use was taken');
 
@@ -1176,6 +1191,7 @@ module.exports = function register({ it }, ctx) {
       /* the key gives no head and no free checkpoint: HEAD's head bytes are zero, CHECKPOINT is unknown */
       assert.ok(h.keyHead.every((x) => x === 0), 'HEAD revealed the head');
       assert.equal(h.caps & 1, 1, 'HEAD byte 59 does not say CERTIFY_HEADPROOF');
+      assert.equal(h.caps & 2, 2, 'HEAD byte 59 does not say OPS_CHECKPOINT (receipts and certifications end with a checkpoint)');
       assert.equal(await edge(device, RETIRED_CHECKPOINT, null, { signal, text: true }), 'EDGE:0A', 'CHECKPOINT still answers');
       /* a head the kit did not weld is refused; the welded one is confirmed */
       const wrong = Buffer.from(h.head); wrong[0] ^= 1;

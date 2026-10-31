@@ -328,18 +328,24 @@ static void H(uint8_t out[32], const char *tag, const uint8_t *a, size_t al,
  *
  * An ML-DSA-65 signature does not fit one answer beside the replies before it (checkpoint, certification, a grant's
  * checkpoint): while collecting, mldsa_sign_reply() keeps what it would sign (web_more) instead, and OKEDGE_MORE signs
- * and stores it as an answer of its own. web_more holds only a digest this plugin computed for that answer; any other
- * request clears it.
+ * and stores it as an answer of its own. An answer can defer two signatures - a certification's and the checkpoint
+ * after it - and each OKEDGE_MORE takes the oldest one left. web_more holds only digests this plugin computed for that
+ * answer; any other request clears it.
  */
 extern int outputmode;
 #define WEB_PICKUP_MAX 3
+#define WEB_MORE_MAX 2
 static uint8_t web_out[2 * WEB_PICKUP_MAX * LINK_BYTES];
 static int web_len = -1;
 static struct {
-  uint8_t set;
   uint8_t which;
   uint8_t digest[32];
-} web_more;
+} web_more[WEB_MORE_MAX];
+static int web_more_n = 0;
+static void web_more_clear(void) {
+  memset(web_more, 0, sizeof(web_more));
+  web_more_n = 0;
+}
 static int to_web(void) { return outputmode == WEBAUTHN; }
 static void web_flush(void) {
   int n = web_len;
@@ -379,8 +385,9 @@ static void reply(const uint8_t *data, int len) {
 }
 
 /*
- * seq . 32 zero bytes: the answer of RECEIPT, SETTLE and LOSS. The head is never revealed: the host welds the link it
- * picks up onto the head it holds, and names that head in its next TX start or proves it with PROVE_HEAD.
+ * seq . 32 zero bytes: the answer of SETTLE and LOSS. The head is never revealed: the host welds the link it picks up
+ * onto the head it holds, and names that head in its next TX start or proves it with PROVE_HEAD. RECEIPT answers with
+ * checkpoint(0), whose first report is this same one.
  */
 static void reply_seq_head(void) {
   uint8_t r[36];
@@ -557,9 +564,10 @@ static void mldsa_pubkey_reply(uint8_t which) {
 /* the ML-DSA-65 signature of a key over a 32-byte digest, sent whole (MLDSA_SIG_SIZE bytes) */
 static int mldsa_sign_reply(uint8_t which, const uint8_t digest[32]) {
   if (web_len >= 0) {
-    web_more.which = which;
-    memcpy(web_more.digest, digest, 32);
-    web_more.set = 1;
+    if (web_more_n >= WEB_MORE_MAX) return 0;
+    web_more[web_more_n].which = which;
+    memcpy(web_more[web_more_n].digest, digest, 32);
+    web_more_n++;
     return 1;
   }
   size_t siglen = 0;
@@ -705,7 +713,9 @@ static void owner_pubkey_reply(void) {
  * decides which approvals a kind of subject accepts. Every certification is a link on the chain,
  * written before this signs: seq is that link's, whose subject is this subject.
  * reply: approval . seq . subject, then the owner public key (X || Y), then the P-256 signature,
- * then the owner's ML-DSA-65 signature (MLDSA_SIG_SIZE bytes) over the same digest.
+ * then the owner's ML-DSA-65 signature (MLDSA_SIG_SIZE bytes) over the same digest, then a checkpoint over the chain
+ * at the certification's link (checkpoint(0): seq and its signatures, the head not shown) - a host keeps it to warm
+ * up from later without the whole chain.
  */
 static void certify_sign(uint8_t approval, const uint8_t subject[32]) {
   uint8_t who[ID_BYTES + 64 + 32], mid[5], digest[32], priv[32], pub[64], sig[64], r[37];
@@ -729,7 +739,8 @@ static void certify_sign(uint8_t approval, const uint8_t subject[32]) {
   reply(r, 37);
   reply(pub, 64);
   reply(sig, 64);
-  if (!mldsa_sign_reply(MLDSA_OWNER_KEY, digest)) status(EDGE_SIGN_FAILED);
+  if (!mldsa_sign_reply(MLDSA_OWNER_KEY, digest)) { status(EDGE_SIGN_FAILED); return; }
+  checkpoint(0);
 }
 
 /* ------------------------------------------------------------ the weld */
@@ -1281,7 +1292,7 @@ void okplugin_edge_decision(int decision) {
     uint8_t web = press.web;
     if (web) {
       outputmode = WEBAUTHN;
-      web_more.set = 0;
+      web_more_clear();
       web_len = 0;
     }
     if (!ensure_identity()) {
@@ -1496,7 +1507,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       }
       r[56] = mask;
       r[57] = st.owes;
-      r[59] = OKEDGE_CAPS_CERTIFY_HEADPROOF;
+      r[59] = OKEDGE_CAPS_CERTIFY_HEADPROOF | OKEDGE_CAPS_OPS_CHECKPOINT;
       r[60] = refused_tx;
       reply(r, 62);
       return;
@@ -1533,10 +1544,13 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
     case OKEDGE_MORE: {
       /* over WebAuthn: the ML-DSA-65 signature the last answer left out; nothing is kept over USB */
-      if (!web_more.set) { status(EDGE_UNKNOWN_REQUEST); return; }
-      uint8_t which = web_more.which, digest[32];
-      memcpy(digest, web_more.digest, 32);
-      memset(&web_more, 0, sizeof(web_more));
+      if (!web_more_n) { status(EDGE_UNKNOWN_REQUEST); return; }
+      uint8_t which = web_more[0].which, digest[32];
+      memcpy(digest, web_more[0].digest, 32);
+      /* the oldest taken; the next (if any) moves up for the next OKEDGE_MORE */
+      for (int k = 1; k < web_more_n; k++) web_more[k - 1] = web_more[k];
+      web_more_n--;
+      memset(&web_more[web_more_n], 0, sizeof(web_more[0]));
       if (!mldsa_sign_reply(which, digest)) status(EDGE_SIGN_FAILED);
       memset(digest, 0, 32);
       return;
@@ -1620,7 +1634,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
       sha256_final(&ctx, subject);
       append(OP_RECEIPT, code, 0, 0, subject, ref, 0, NULL); /* the weld pays ref */
       complete_fulfilled(); /* its budget, if this was its last open use */
-      reply_seq_head();
+      /* a checkpoint at the receipt's link (or the budget's end after it): seq . zeros, then its signatures */
+      checkpoint(0);
       return;
     }
     case OKEDGE_SETTLE: {
@@ -1686,7 +1701,7 @@ void okplugin_edge_ctap(const uint8_t *data, int len, uint8_t sub) {
   if (sub == OKEDGE_MORE) {
     okplugin_edge_recv(buffer); /* an answer of its own, not collected */
   } else {
-    web_more.set = 0;
+    web_more_clear();
     web_len = 0;
     okplugin_edge_recv(buffer);
     web_flush();
