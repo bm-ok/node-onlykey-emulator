@@ -1,4 +1,4 @@
-From 2e8fdfc97f6b6a7dac3960da30ce1c8520998c87 Mon Sep 17 00:00:00 2001
+From 70a8fd79a4504f57f81a7f20962efbb292c5788a Mon Sep 17 00:00:00 2001
 From: bmatusiak <bmatusiak@gmail.com>
 Date: Wed, 28 Oct 2026 19:32:01 -0400
 Subject: [PATCH] fido2: a new request wipes a reply already delivered
@@ -15,11 +15,17 @@ arrives after the last reply was delivered whole is a new request: the
 timer is stopped and its wipe done at once, keeping the request's own
 CTAP message. A host that sends several requests in a row no longer
 waits 5 s before each one; a repeated packet is answered as before.
+
+The same holds for a request on the raw HID interface. While a
+delivered reply is held, the main loop drops every sensed press, so a
+raw HID request that waits for a press within those 5 s (a host that
+reads over WebAuthn, then asks for a confirmation over USB) lost the
+press and timed out. Such a request now wipes the delivered reply first.
 ---
  fido2/ok_extension.cpp |  8 ++++++++
- onlykey/okcore.cpp     | 15 ++++++++++++++-
+ onlykey/okcore.cpp     | 26 +++++++++++++++++++++++++-
  onlykey/okcore.h       |  1 +
- 3 files changed, 23 insertions(+), 1 deletion(-)
+ 3 files changed, 34 insertions(+), 1 deletion(-)
 
 diff --git a/fido2/ok_extension.cpp b/fido2/ok_extension.cpp
 index 5e3eac0..3a01767 100644
@@ -41,10 +47,38 @@ index 5e3eac0..3a01767 100644
              Serial.println("Decrypted client handle");
              byteprint(client_handle, handle_len);
 diff --git a/onlykey/okcore.cpp b/onlykey/okcore.cpp
-index 0620dbc..73a622d 100644
+index 0620dbc..e5acf4b 100644
 --- a/onlykey/okcore.cpp
 +++ b/onlykey/okcore.cpp
-@@ -5569,6 +5569,9 @@ void okcore_run_pending_op() {
+@@ -314,9 +314,11 @@ void recvmsg(int n) {
+     // This is for staging large response via keyboard, not currently used
+     //if (store_keyboard_response()) return;
+ 
++    int from_rawhid = 0;
+     if (!n) {
+         n = RawHID.recv(recv_buffer, 0); // 0 timeout = do not wait
+         if (outputmode != RAW_USB && n) changeoutputmode(RAW_USB); //USB
++        from_rawhid = n > 0;
+     }
+ 
+     //Integrity Check
+@@ -331,6 +333,15 @@ void recvmsg(int n) {
+         Serial.print(F("\n\nReceived packet"));
+         byteprint(recv_buffer, 64);
+ #endif
++        // A request on the raw HID interface after the last WebAuthn reply
++        // was delivered whole: that reply is wiped now, not when the Wipedata
++        // timer fires. While it is held the main loop drops every sensed
++        // press, so a press this request waits for would be lost. A request
++        // that came through WebAuthn was handled in bridge_to_onlykey().
++        if (from_rawhid && pending_operation == CTAP2_ERR_DATA_WIPE &&
++            large_resp_buffer_offset && large_resp_buffer_cursor >= large_resp_buffer_offset) {
++            wipedata_now();
++        }
+ 
+         if (configmode == true && recv_buffer[4] != OKCONNECT && recv_buffer[4] != OKWIPESLOT && recv_buffer[4] != OKSETSLOT && recv_buffer[4] != OKSETPRIV && recv_buffer[4] != OKRESTORE && recv_buffer[4] != OKFWUPDATE && recv_buffer[4] != OKWIPEPRIV && recv_buffer[4] != OKGETLABELS && recv_buffer[4] != OKPIN && recv_buffer[4] != OKPINSEC && recv_buffer[4] != OKPINSD) {
+ #ifdef DEBUG
+@@ -5569,6 +5580,9 @@ void okcore_run_pending_op() {
      fadeoff(0);
  }
  
@@ -54,7 +88,7 @@ index 0620dbc..73a622d 100644
  void wipetasks() {
      packet_buffer_offset = 0;
      memset(rsa_private_key, 0, MAX_RSA_KEY_SIZE);
-@@ -5579,7 +5582,7 @@ void wipetasks() {
+@@ -5579,7 +5593,7 @@ void wipetasks() {
       * and the start of the message zeroed, so the request failed with
       * CTAP1_ERR_INVALID_COMMAND. A stalled message is still dropped by
       * ctaphid_check_timeouts(), and everything else is wiped as before. */
@@ -63,7 +97,7 @@ index 0620dbc..73a622d 100644
      memset(large_resp_buffer, 0, LARGE_RESP_BUFFER_SIZE);
      memset(keyboard_buffer, 0, KEYBOARD_BUFFER_SIZE);
      memset(packet_buffer_details, 0, sizeof(packet_buffer_details));
-@@ -5679,6 +5682,16 @@ void wipedata() {
+@@ -5679,6 +5693,16 @@ void wipedata() {
      packet_buffer_details[1] = 0;
  }
  
