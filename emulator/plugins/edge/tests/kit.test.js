@@ -1346,6 +1346,16 @@ module.exports = function register({ it }, ctx) {
         r = await run(['end']);
         assert.match(r.lines.join('\n'), /ended/);
       } finally {
+        /*
+         * THE KIT TAKES BACK THE CHAIN: every link this test wrote went through the lib's Edge client, which welded them
+         * into its own copy - the kit's saw none. More than the key's ring of 8 and the next test's HEAD could never weld
+         * again ("the kit fell behind the key's ring"; CI 2026-10-31, where the restore test after this one skips and
+         * nothing starts a fresh chain).
+         */
+        try {
+          const after = await edgeSvc.head({ signal });
+          if (after && after.head) welded.set(Buffer.from(deviceIdOf(await pubkey(device, { signal }))).toString('hex'), { seq: after.seq, head: after.head });
+        } catch (e) { log(`the kit could not take back the chain's head (${e.message})`); }
         if (svc) await svc.close();
         await lib.destroy();
         control.setHome(null);
