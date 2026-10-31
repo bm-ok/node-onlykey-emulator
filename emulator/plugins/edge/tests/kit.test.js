@@ -1232,9 +1232,10 @@ module.exports = function register({ it }, ctx) {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'okt-edge-agent-'));
       control.setHome(home); /* a test home: setHome, never the env (CLI.md §5) */
       let svc = null;
+      /* the lib's Edge client, outside the try: the finally hands its welded head back to the kit */
+      let edgeSvc = null;
       try {
         const { okcrypto, transport } = lib.services;
-        let edgeSvc = null;
         ctx.requireLib('node-onlykey-lib/plugins/edge')({ transport }, (err, s) => { if (err) throw err; edgeSvc = s.edge; });
         /* the phone holds the chain (its copy): here the kit's, which followed every link - the key never reveals its head */
         const held = await kitHead(device, { signal });
