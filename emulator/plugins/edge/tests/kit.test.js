@@ -1456,6 +1456,11 @@ module.exports = function register({ it }, ctx) {
       try {
         const { okcrypto, edge: web } = app.services;
         await okcrypto.connectTunnel();
+        /*
+         * this host holds the chain as the kit welded it (the key never reveals its head): a fresh client with no copy
+         * can weld only a chain it sees from its start - which a long CI chain is not
+         */
+        web.knownHead(usb.seq, usb.head, deviceIdOf(await pubkey(device, { signal })));
 
         const h = await web.head();
         assert.equal(h.seq === null ? SEQ_NONE : h.seq, usb.seq, 'HEAD over WebAuthn: another seq than over USB');
