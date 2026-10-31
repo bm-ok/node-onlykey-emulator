@@ -1072,6 +1072,8 @@ extern "C" uint8_t CRYPTO_AUTH;
 extern "C" uint8_t user_input_mode;
 extern uint8_t isfade;
 extern uint8_t packet_buffer_details[5];
+extern uint8_t pending_operation;
+#pragma comment(linker, "/alternatename:?pending_operation@@3EA=?okemu_absent_byte@@3EA")
 #pragma comment(linker, "/alternatename:CRYPTO_AUTH=okemu_absent_auth")
 #pragma comment(linker, "/alternatename:user_input_mode=okemu_absent_mode")
 #pragma comment(linker, "/alternatename:?isfade@@3EA=?okemu_absent_byte@@3EA")
@@ -1082,8 +1084,21 @@ extern uint8_t CRYPTO_AUTH __attribute__((weak));
 extern uint8_t isfade __attribute__((weak));
 extern uint8_t packet_buffer_details[5] __attribute__((weak));
 extern uint8_t user_input_mode __attribute__((weak));
+extern uint8_t pending_operation __attribute__((weak));
 #define OKEMU_HAS(sym, standin) ((const void *)&(sym) != nullptr)
 #endif
+
+/*
+ * pending_operation, as two bits: the firmware's main loop DROPS a sensed press while it holds a WebAuthn reply
+ * (0xF6 CTAP2_ERR_DATA_READY, not yet collected; 0xF7 CTAP2_ERR_DATA_WIPE, delivered and waiting for the 5 s wipe) -
+ * so a press that lands then is taken from the queue and never reaches payload(). Reported with the confirm state so
+ * a host can see it (box, 2026-10-31: the first press after a login was lost, the retry worked).
+ *   0 nothing held, 1 DATA_READY, 2 DATA_WIPE, 3 another value
+ */
+static uint32_t okemu_pending_code(void) {
+  if (!OKEMU_HAS(pending_operation, okemu_absent_byte)) return 0;
+  return pending_operation == 0 ? 0u : pending_operation == 0xF6 ? 1u : pending_operation == 0xF7 ? 2u : 3u;
+}
 
 extern "C" int okemu_confirm_state(void) {
   if (!OKEMU_HAS(CRYPTO_AUTH, okemu_absent_auth) || !OKEMU_HAS(isfade, okemu_absent_byte)
@@ -1092,5 +1107,6 @@ extern "C" int okemu_confirm_state(void) {
   }
   const uint32_t mode = OKEMU_HAS(user_input_mode, okemu_absent_mode) ? (user_input_mode & 0x7u) : 7u;
   return (int)((uint32_t)CRYPTO_AUTH | ((uint32_t)packet_buffer_details[0] << 8)
-                | ((uint32_t)packet_buffer_details[1] << 16) | (mode << 24) | ((uint32_t)(isfade ? 1 : 0) << 27));
+                | ((uint32_t)packet_buffer_details[1] << 16) | (mode << 24) | ((uint32_t)(isfade ? 1 : 0) << 27)
+                | (okemu_pending_code() << 28));
 }

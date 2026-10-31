@@ -191,6 +191,8 @@ void okemu_set_button_ticks(int n, int ticks);
  *   bits 16-23 its slot (packet_buffer_details[1])
  *   bits 24-26 user_input_mode (0 code, 1 press, 2 none; 7 = this firmware has none)
  *   bit  27    isfade (the wait window is open)
+ *   bits 28-29 pending_operation: 0 none, 1 a WebAuthn reply not yet collected (0xF6), 2 one delivered and
+ *              waiting for its wipe (0xF7), 3 another value - while 1 or 2, the main loop drops a sensed press
  * -1 when the staged firmware lacks these. The caller checks the firmware is running.
  */
 int okemu_confirm_state(void);
