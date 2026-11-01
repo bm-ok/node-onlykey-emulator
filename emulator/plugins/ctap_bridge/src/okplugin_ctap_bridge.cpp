@@ -77,6 +77,23 @@ static const uint8_t *cb_request_rpid(int *len) {
   return NULL;
 }
 
+/*
+ * the allowed site's SHA-256 into hash: 1, or 0 when none is set - the rpId vendor_bridge acts as (Brad, 2026-10-31:
+ * "we should use the rpid set in the plugin that is configurable"). The site, not the on/off byte: that one switches
+ * the WebAuthn tunnel's extras.
+ */
+int okplugin_ctap_bridge_site_hash(uint8_t hash[32]) {
+  char site[CB_SITE_MAX + 1];
+  int len = cb_site(site);
+  if (!len) return 0;
+  SHA256_CTX ctx;
+  sha256_init(&ctx);
+  sha256_update(&ctx, (const uint8_t *)site, (size_t)len);
+  sha256_final(&ctx, hash);
+  memset(site, 0, sizeof(site));
+  return 1;
+}
+
 int okplugin_ctap_bridge_site(const uint8_t *appid) {
   char site[CB_SITE_MAX + 1];
   int len;

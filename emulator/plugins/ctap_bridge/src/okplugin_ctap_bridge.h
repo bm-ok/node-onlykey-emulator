@@ -26,6 +26,8 @@
 void okplugin_ctap_bridge_recv(uint8_t *buffer);
 int okplugin_ctap_bridge_allows(uint8_t cmd, uint8_t code);
 int okplugin_ctap_bridge_site(const uint8_t *appid);
+/* the allowed site's SHA-256: 1, or 0 when none (vendor_bridge's rpId) */
+int okplugin_ctap_bridge_site_hash(uint8_t hash[32]);
 void okplugin_ctap_bridge_getpubkey(uint8_t *buffer);
 /* the report over the WebAuthn tunnel, sealed: the same text as over USB (read only) */
 void okplugin_ctap_bridge_report_sealed(void);
