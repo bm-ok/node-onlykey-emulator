@@ -12,7 +12,7 @@ const OKVENDORBRIDGE = 0x80 | 0x7d;
 module.exports = function register({ it }, ctx) {
   /* the lib over the kit's device, okcrypto's ctap = the vendor bridge on the lib's own transport (bound once started) */
   async function vendorApp() {
-    const { createVendorBridgeCtap } = ctx.requireLib('node-onlykey-lib/src/protocol/vendor-bridge');
+    const { createVendorBridgeCtap } = ctx.requireLib('node-onlykey-lib/transport/vendor-bridge');
     const late = {};
     const ctap = { vendorBridge: true, getAssertion: (p, o) => late.ctap.getAssertion(p, o) };
     const app = await ctx.kit.libstack.composeLib(ctx.device, { config: { okcrypto: { ctap, rpIds: ['ok-edge.bmatusiak.workers.dev'] } } });
