@@ -1082,10 +1082,15 @@ module.exports = function register({ it }, ctx) {
       let h = await ensureChain(device, 12, { signal }); /* #2 must be out of the ring (8) */
       assert.equal(await edge(device, LOSS, Buffer.concat([u32(0), u32(h.seq + 5)]), { signal, text: true }), 'EDGE:12', 'a loss past the head was taken');
       assert.equal(await edge(device, LOSS, Buffer.concat([u32(2), u32(1)]), { signal, text: true }), 'EDGE:12', 'a backwards range was taken');
-      const [r] = await edge(device, LOSS, Buffer.concat([u32(0), u32(1)]), { signal, press: true });
+      const rs = await edge(device, LOSS, Buffer.concat([u32(0), u32(1)]), { signal, press: true, reports: 2 + PQ_SIG_REPORTS });
+      const [r] = rs;
       const seq = r.readUInt32LE(0);
       h = await head(device, { signal });
       assert.equal(seq, h.seq);
+      /* OKEDGE_CAPS_LOSS_ANCHOR: the answer is a checkpoint that SHOWS the head after the LOSS - a host past the lost range starts there */
+      assert.equal(h.caps & 4, 4, 'HEAD byte 59 does not say LOSS_ANCHOR');
+      assert.bytes(r.subarray(4, 36), Buffer.from(h.head), 'the LOSS did not show the head after it');
+      assert.ok(checkpointVerifies(await pubkey(device, { signal }), seq, h.head, rs[1], await pubkeyPq(device, 0, { signal }), joined(rs.slice(2), PQ_SIG)), 'the LOSS checkpoint does not verify (both halves)');
       const [l] = await pickup(device, seq, 1, { signal });
       const f = chain.decodeLink(l.link);
       /* #2 is long out of the key's ring (8) by now, so the LOSS names no next link: zeros */
@@ -1100,7 +1105,7 @@ module.exports = function register({ it }, ctx) {
        */
       const named = async (to) => {
         const [want] = await pickup(device, to + 1, 1, { signal });
-        const [rr] = await edge(device, LOSS, Buffer.concat([u32(to), u32(to)]), { signal, press: true });
+        const [rr] = await edge(device, LOSS, Buffer.concat([u32(to), u32(to)]), { signal, press: true, reports: 2 + PQ_SIG_REPORTS });
         const [ll] = await pickup(device, rr.readUInt32LE(0), 1, { signal });
         const sub = Buffer.from(chain.decodeLink(ll.link).subject);
         assert.equal(sub.readUInt32LE(0), to);

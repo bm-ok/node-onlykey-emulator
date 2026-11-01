@@ -26,6 +26,7 @@
 /* HEAD byte 59: what this firmware does - hosts send the newer requests only when the bit is set */
 #define OKEDGE_CAPS_CERTIFY_HEADPROOF 0x01 /* CERTIFY, PUBKEY {which}, PROVE_HEAD; the head is never revealed */
 #define OKEDGE_CAPS_OPS_CHECKPOINT 0x02   /* RECEIPT and CERTIFY end with a checkpoint (checkpoint(0)); OKEDGE_MORE takes up to two */
+#define OKEDGE_CAPS_LOSS_ANCHOR 0x04      /* LOSS ends with checkpoint(1): the head after the LOSS link, shown and signed */
 #define OKEDGE_GRANT_CREATE 0x10  /* a press: opens a budget */
 #define OKEDGE_GRANT_LABEL 0x11   /* {scope index, label 32}, no press: a derived identity's label for the next GRANT_CREATE */
 #define OKEDGE_GRANT_REVOKE 0x12  /* no press: ends a live budget */

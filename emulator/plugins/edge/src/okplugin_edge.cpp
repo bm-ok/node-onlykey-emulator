@@ -385,7 +385,7 @@ static void reply(const uint8_t *data, int len) {
 }
 
 /*
- * seq . 32 zero bytes: the answer of SETTLE and LOSS. The head is never revealed: the host welds the link it picks up
+ * seq . 32 zero bytes: the answer of SETTLE. The head is never revealed outside PROVE_HEAD and LOSS: the host welds the link it picks up
  * onto the head it holds, and names that head in its next TX start or proves it with PROVE_HEAD. RECEIPT answers with
  * checkpoint(0), whose first report is this same one.
  */
@@ -1189,13 +1189,15 @@ static void loss_subject(uint32_t to, uint8_t subject[32]) {
  * anywhere holds it. One link: op = loss, decision approve, slot 0, the press flag,
  * grant_id = from, subject = loss_subject(to). It records the acceptance and pays no debt
  * (only a receipt or a settle does); a host then accepts a gap covered by it.
- * reply: seq . head after it.
+ * reply: checkpoint(1) - the head after the LOSS link, shown and signed. The links before it are
+ * lost to every host, so no host can weld this head; a host starts its copy here instead. It is
+ * shown only for a press, on a link that records the loss.
  */
 static void loss_pressed(void) {
   uint8_t subject[32];
   loss_subject(press.id, subject);
   append(OP_LOSS, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, subject, press.from, 0, NULL);
-  reply_seq_head();
+  checkpoint(1);
 }
 
 /*
@@ -1507,7 +1509,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       }
       r[56] = mask;
       r[57] = st.owes;
-      r[59] = OKEDGE_CAPS_CERTIFY_HEADPROOF | OKEDGE_CAPS_OPS_CHECKPOINT;
+      r[59] = OKEDGE_CAPS_CERTIFY_HEADPROOF | OKEDGE_CAPS_OPS_CHECKPOINT | OKEDGE_CAPS_LOSS_ANCHOR;
       r[60] = refused_tx;
       reply(r, 62);
       return;
