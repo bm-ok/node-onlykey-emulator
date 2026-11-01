@@ -62,7 +62,7 @@ static void vb_send(const uint8_t *data, int len) {
 
 /*
  * No lock check here: the sketch reads the vendor interface only while unlocked (OnlyKey.ino recvmsg), so a locked key
- * never gets this far - the kit's first test. Leaving it out keeps the DEBUG test hex under the Edge region (0x39800).
+ * never gets this far - the kit's first test. Leaving it out keeps the DEBUG test hex under the Edge region (0x39800) - as do the short refusals.
  */
 void okplugin_vendor_bridge_recv(uint8_t *buffer) {
   uint8_t index = buffer[5] & 0x7f;
@@ -70,7 +70,7 @@ void okplugin_vendor_bridge_recv(uint8_t *buffer) {
   if (index == 0) vb_reset();
   if (index != req_next || req_have + VB_IN > (int)sizeof(req)) {
     vb_reset();
-    hidprint("Error VB order");
+    hidprint("VB order");
     return;
   }
   memcpy(req + req_have, buffer + 6, VB_IN);
@@ -81,14 +81,14 @@ void okplugin_vendor_bridge_recv(uint8_t *buffer) {
   int keylen = req[0] | (req[1] << 8);
   if (keylen <= 0 || 2 + keylen > req_have || keylen > 256 || !is_extension_request(req + 2, keylen)) {
     vb_reset();
-    hidprint("Error VB request");
+    hidprint("VB req");
     return;
   }
   /* the key's own rpId: ctap_bridge's site */
   uint8_t rpid_hash[32];
   if (!okplugin_ctap_bridge_site_hash(rpid_hash)) {
     vb_reset();
-    hidprint("Error VB no site");
+    hidprint("VB site");
     return;
   }
   /* as extend_fido2: [status][output]; with the rpId hash as the appid, as the U2F entry hands it in */

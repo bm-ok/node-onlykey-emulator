@@ -16,7 +16,7 @@
  *   answer, one or more reports: r[0] = 0xFD, r[1] = index (bits 0-6) | 0x80 on the last;
  *     the first carries the total length (u16 LE) in r[2..3] and data from r[4]; the rest data from r[2]
  *     data = [status][output] - the bytes a CTAP2 assertion's signature would hold
- *   refused: a text report - "Error VB no site", "Error VB request" (malformed), "Error VB order". A locked key never reads
+ *   refused: a text report - "VB site" (none set), "VB req" (malformed), "VB order". A locked key never reads
  *   it (the sketch reads the vendor interface only unlocked).
  */
 #ifndef OKPLUGIN_VENDOR_BRIDGE_H
