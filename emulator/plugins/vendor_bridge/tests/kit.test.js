@@ -29,12 +29,18 @@ module.exports = function register({ it }, ctx) {
     },
   });
 
-  it('vendor_bridge: refused while locked - a text report, nothing reaches the tunnel', async ({ device, assert, signal }) => {
+  /*
+   * LOCKED, THE KEY DOES NOT READ IT: the sketch calls recvmsg only while unlocked (OnlyKey.ino), so nothing of the
+   * vendor interface - this message included - is dispatched before the PIN. (The plugin's own lock check is a second
+   * guard.) No answer at all, and nothing of the tunnel's.
+   */
+  it('vendor_bridge: while locked the key does not read it - no answer', async ({ device, assert, signal }) => {
     await device.restart({ signal });
     const since = device.mark(ctx.IFACE.VENDOR);
     device.sendVendor({ msg: OKVENDORBRIDGE, slot: 0x80, payload: Buffer.alloc(58) });
-    const reply = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /vendor_bridge|Error/, timeoutMs: 6000, signal });
-    assert.equal(ctx.okmsg.text(reply).trim(), 'Error vendor_bridge device locked');
+    await device.sleep(3000, { signal });
+    const got = device.reportsSince(ctx.IFACE.VENDOR, since);
+    assert.equal(got.filter((r) => r[0] === 0xfd).length, 0, 'a locked key answered the vendor bridge');
   });
 
   it('vendor_bridge: the bucket identity and bucket key over the vendor interface - the same bytes as over the WebAuthn tunnel', async ({ device, assert, signal, log }) => {
