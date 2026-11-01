@@ -11,10 +11,14 @@
 #include "okplugin_vendor_bridge.h"
 #include "plugins/ctap_bridge/okplugin_ctap_bridge.h"
 
+/* C linkage, as fido2's solo.h and extensions.h declare them (a C++ declaration names another symbol: the build links,
+   and the firmware dies at the first request on an undefined symbol) */
+extern "C" {
 int16_t bridge_u2f_to_solo(uint8_t *_appid, uint8_t *output, uint8_t *keyh, int keylen);
 int is_extension_request(uint8_t *kh, int len);
 extern uint16_t output_buffer_offset;
 extern uint16_t output_buffer_size;
+}
 
 #define VB_IN 58                  /* request bytes per report */
 #define VB_REQ_MAX (2 + 256 + VB_IN)  /* total length . credential ID, in whole reports */
