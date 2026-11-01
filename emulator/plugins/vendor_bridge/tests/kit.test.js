@@ -10,12 +10,23 @@
 const OKVENDORBRIDGE = 0x80 | 0x7d;
 
 module.exports = function register({ it }, ctx) {
-  /* the lib over the kit's device, okcrypto's ctap = the vendor bridge on the lib's own transport (bound once started) */
+  /*
+   * the lib UNDER TEST (ctx.requireLib - not the kit's own pinned copy, which composeLib loads) over the kit's device
+   * pipe (libstack.kitPipe), as a desktop host: the embedded transport, okcrypto's ctap = the vendor bridge on the lib's
+   * own transport (bound once started)
+   */
   async function vendorApp() {
     const { createVendorBridgeCtap } = ctx.requireLib('node-onlykey-lib/transport/vendor-bridge');
+    const Rectify = ctx.requireLib('@bmatusiak/rectify');
     const late = {};
     const ctap = { vendorBridge: true, getAssertion: (p, o) => late.ctap.getAssertion(p, o) };
-    const app = await ctx.kit.libstack.composeLib(ctx.device, { config: { okcrypto: { ctap, rpIds: ['ok-edge.bmatusiak.workers.dev'] } } });
+    const { pipe } = ctx.kit.libstack.kitPipe(ctx.device);
+    const plugins = ['host', 'transport/embedded', 'session', 'device', 'okcrypto'].map((p) => ctx.requireLib(`node-onlykey-lib/plugins/${p}`));
+    plugins.config = { transport: { pipe }, okcrypto: { ctap, rpIds: ['ok-edge.bmatusiak.workers.dev'] } };
+    const app = await new Promise((resolve, reject) => {
+      const a = Rectify.build(plugins, (err, started) => (err ? reject(err) : resolve(started)));
+      a.start();
+    });
     late.ctap = createVendorBridgeCtap(app.services.transport, { timeoutMs: 60000 });
     return app;
   }
