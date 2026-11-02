@@ -159,4 +159,33 @@ module.exports = function register({ it }, ctx) {
     const ok = await derive(device, signal, 'okedge/test/a', { confirm: presser(device, log) });
     assert.equal(ok.length, 64, 'a well-formed request after the refusals: no 32-byte secret');
   });
+
+  /*
+   * A REFUSED DERIVE FORGETS ITS PACKET NUMBER (Brad, 2026-11-02, blue-key in the Windows web app: after derives that
+   * timed out, a reloaded page's reads were answered with an empty success - dropped as duplicates - until its packet
+   * numbers climbed past the timed-out derive's). The firmware drops a request packet numbered at or below the last
+   * one it took, and forgets that number when a request's final packet is handled; the derive's refusal returned
+   * before that. A page numbers its packets from 1 (the lib's counter starts with the page): modelled here by the lib's
+   * test seam - the refused derive numbered high, then a new page from 1.
+   */
+  it('derive_secret: a refused derive leaves no packet number behind - a new page numbering from 1 is answered', async ({ device, assert, signal, log }) => {
+    await device.restart({ signal });
+    await device.unlock(ctx.PINS.primary, { signal });
+    const { chunk } = ctx.requireLib('node-onlykey-lib/protocol');
+    /* a wrong first button ends the key's code wait at once (ctap_challenge_test: -2) - the derive is refused */
+    const wrongCode = async ({ digits }) => {
+      const wrong = digits.map((d) => (d % 6) + 1);
+      log(`the host asks for ${digits.join(' ')} - ${wrong.join(' ')} pressed`);
+      await device.sleep(1500);
+      device.pressLine(wrong);
+    };
+    chunk._resetPacketCounter(199);
+    let refused = null;
+    try { await derive(device, signal, 'okedge/test/a', { confirm: wrongCode }); } catch (e) { refused = String(e && e.message); }
+    assert.ok(refused, 'a derive with the wrong code came back with a secret');
+    log(`refused (packet 200): ${refused.slice(0, 80)}`);
+    chunk._resetPacketCounter(0);
+    const fresh = await derive(device, signal, 'okedge/test/a', { confirm: presser(device, log) });
+    assert.equal(fresh.length, 64, 'a new page numbering from 1 after a refused derive: no 32-byte secret');
+  });
 };
