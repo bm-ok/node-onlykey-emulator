@@ -24,7 +24,7 @@ const HEAD = 0x01;
 const PICKUP = 0x02;
 const RETIRED_CHECKPOINT = 0x03; /* answers as unknown: the key confirms only a head a host proves */
 const PROVE_HEAD = 0x09; /* {seq u32, head 32}: on a match, seq . head, then both checkpoint signatures */
-const WARM = 0x0A; /* {seq u32, gate token 28}: a token this key made, in reach - as PROVE_HEAD */
+const WARM = 0x0A; /* {seq u32, gate token 16}: a token this key made, in reach - as PROVE_HEAD */
 const PUBKEY = 0x04;
 const PUBKEY_PQ = 0x05; /* {which: 0 checkpoint key, 1 owner key}: an ML-DSA-65 public key */
 /* ML-DSA-65 sizes and their 64-byte reports */
@@ -1221,7 +1221,7 @@ module.exports = function register({ it }, ctx) {
     });
 
   /*
-   * THE WARM-UP GATE: every checkpoint's first report carries its gate token (bytes 36-63), and WARM {seq, token} -
+   * THE WARM-UP GATE: every checkpoint's first report carries its gate token (bytes 36-51, 52-63 still zero), and WARM {seq, token} -
    * a token this key made, not ahead of its seq and within 1024 behind - answers as PROVE_HEAD does, the head shown.
    * A host that holds none of the chain warms from the token its login card carries.
    */
@@ -1233,7 +1233,8 @@ module.exports = function register({ it }, ctx) {
       const pubPq = await pubkeyPq(device, 0, { signal });
       assert.equal(h.caps & 8, 8, 'HEAD byte 59 does not say WARM_GATE');
       const proved = await edge(device, PROVE_HEAD, Buffer.concat([u32(h.seq), Buffer.from(h.head)]), { signal, reports: 2 + PQ_SIG_REPORTS });
-      const token = Buffer.from(proved[0].subarray(36, 64));
+      const token = Buffer.from(proved[0].subarray(36, 52));
+      assert.ok(proved[0].subarray(52, 64).every((x) => x === 0), 'the padding after the token is not zero');
       assert.ok(token.some((x) => x !== 0), 'the checkpoint carries no gate token');
       /* the gate opens on the token: seq . head shown, both signatures over it */
       const rs = await edge(device, WARM, Buffer.concat([u32(h.seq), token]), { signal, reports: 2 + PQ_SIG_REPORTS });
@@ -1241,7 +1242,7 @@ module.exports = function register({ it }, ctx) {
       assert.equal(c.readUInt32LE(0), h.seq);
       assert.bytes(c.subarray(4, 36), Buffer.from(h.head));
       assert.ok(checkpointVerifies(pub, h.seq, h.head, s, pubPq, joined(rs.slice(2), PQ_SIG)), 'the warm-up checkpoint does not verify');
-      assert.bytes(c.subarray(36, 64), token, 'the same seq made another token');
+      assert.bytes(c.subarray(36, 52), token, 'the same seq made another token');
       /* refused: a flipped token, a seq ahead of the key, this token shown for another seq */
       const wrong = Buffer.from(token); wrong[0] ^= 1;
       assert.equal(await edge(device, WARM, Buffer.concat([u32(h.seq), wrong]), { signal, text: true }), 'EDGE:0E', 'a wrong token warmed the key');

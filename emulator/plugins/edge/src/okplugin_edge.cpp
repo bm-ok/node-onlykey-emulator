@@ -87,7 +87,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define SEQ_NONE 0xFFFFFFFFUL
 #define LINK_BYTES 64
 #define ID_BYTES 16
-#define GATE_TOKEN_BYTES 28 /* a checkpoint's gate token: the rest of its 64-byte first report */
+#define GATE_TOKEN_BYTES 16 /* a checkpoint's gate token: bytes 36-51 of its first report - 52-63 stay zero, the padding hosts read as a pressed answer's */
 
 #define MAX_LIVE 4      /* live budgets at once */
 #define MAX_SCOPES 4    /* scopes per budget */
@@ -689,7 +689,7 @@ static int ensure_identity(void) {
  * The confirmation: two signatures over (seq, head) (lib chain.checkpointDigest)
  *   SHA256("OKEDGE-CKPT-v1" || device_id || seq (u32 LE) || head)
  * by the P-256 checkpoint key and its ML-DSA-65 twin.
- * reply: seq u32 . head 32 (show_head) or 32 zero bytes . gate token 28 (gate_token); then the 64-byte
+ * reply: seq u32 . head 32 (show_head) or 32 zero bytes . gate token 16 (gate_token); then the 64-byte
  * P-256 signature; then the ML-DSA-65 signature (MLDSA_SIG_SIZE bytes). The head is shown only to a
  * host that proved it (PROVE_HEAD, WARM); a signature over a head the host does not hold verifies
  * nothing for it.
@@ -1567,7 +1567,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       return;
     case OKEDGE_WARM: {
       /*
-       * {seq u32, gate token 28}: a token this key made for a checkpoint at seq, no further than OKEDGE_WARM_REACH behind
+       * {seq u32, gate token 16}: a token this key made for a checkpoint at seq, no further than OKEDGE_WARM_REACH behind
        * the key's seq and not ahead of it - then the confirmation with the head shown, as PROVE_HEAD gives it
        */
       uint32_t seq = get32(buffer + 6);
