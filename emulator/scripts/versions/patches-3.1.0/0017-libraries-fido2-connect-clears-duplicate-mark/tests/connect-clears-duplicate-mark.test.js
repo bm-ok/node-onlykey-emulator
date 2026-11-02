@@ -86,7 +86,7 @@ describe('0017: a tunnel connect clears the duplicate mark of an unfinished requ
     chunk._resetPacketCounter(0);
     const b = await page(null);
     try {
-      const pub = await b.services.okcrypto.agent.publicKey('okedge/test/0017', { timeoutMs: 15000 });
+      const pub = await b.services.okcrypto.agent.publicKey({ ssh: { user: 'okedge', host: 'test-0017' } }, { timeoutMs: 15000 });
       log(`page B: the read answered (${pub && pub.length} bytes)`);
       assert.ok(pub && pub.length === 32, 'page B\'s read came back without a public key');
     } finally {

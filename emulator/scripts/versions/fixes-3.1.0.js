@@ -9,6 +9,8 @@
  *   0012  okcore: the 20 s user timer stops when a request is decided, so it cannot answer "Timeout" for the next one
  *         (was the emulator plugin fix_usertimeout until 2026-10-26; sent to the maintainer 2026-10-26)
  *   0013  okcore: wiping an RSA slot clears its key type, so the wiped slot reads as empty (sent 2026-10-26)
+ *   0017  fido2: a tunnel connect clears the duplicate mark of a request cut off before its final packet, so a new
+ *         page's requests are not dropped as duplicates (2026-11-02; not sent)
  *
  * SKIPPED (a SKIPPED file in its folder, beside its HOLD: the maintainer declined it - kept, never staged, never
  * proposed again):
@@ -31,7 +33,7 @@
  * build.json records which, as `fixes`.
  */
 module.exports = {
-  names: ["0012", "0013", "0015"],
+  names: ["0012", "0013", "0015", "0017"],
   experimental: ["0016"],
   held: ["0014"],
   byName: {
@@ -102,6 +104,16 @@ module.exports = {
         edits: [
           ["extern bool fadeendafter2sec(Task *me);\nextern void typeoutbackup(Task *me);\nextern void wipedata();\nextern void wipetasks();\nextern void fadeoffafter20();\nextern void cancelfadeoffafter20();\n",
            "extern bool fadeendafter2sec(Task *me);\nextern void typeoutbackup(Task *me);\nextern void wipedata();\nextern void wipedata_now();\nextern void wipetasks();\nextern void fadeoffafter20();\nextern void cancelfadeoffafter20();\n"],
+        ],
+      },
+    ],
+    "0017": [
+      /* 0017-fido2-a-tunnel-connect-clears-the-duplicate-mark-of-an-unfinished-request.patch */
+      {
+        file: "libraries/fido2/ok_extension.cpp",
+        edits: [
+          ["        outputmode = DISCARD; // Discard output\n        if (cmd == OKCONNECT && !CRYPTO_AUTH) {\n            large_buffer_offset = 0;\n            // Set time if not already set\n            set_time(client_handle);\n            memset(ecc_public_key, 0, sizeof(ecc_public_key));\n",
+           "        outputmode = DISCARD; // Discard output\n        if (cmd == OKCONNECT && !CRYPTO_AUTH) {\n            large_buffer_offset = 0;\n            // Every OKCONNECT makes a new transit key below, so no packet sealed\n            // before it continues a request: the duplicate mark of a request that\n            // never reached its final packet is cleared with it.\n            last_request_opt3 = 0;\n            // Set time if not already set\n            set_time(client_handle);\n            memset(ecc_public_key, 0, sizeof(ecc_public_key));\n"],
         ],
       },
     ],
