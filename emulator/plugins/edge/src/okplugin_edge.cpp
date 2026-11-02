@@ -241,8 +241,11 @@ static const uint8_t *next_intent;
  */
 static uint8_t refused_tx;
 static void status(uint8_t code);
-static void refuse_tx(uint8_t code) {
+static void count_refused(void) {
   if (refused_tx < 255) refused_tx++;
+}
+static void refuse_tx(uint8_t code) {
+  count_refused();
   status(code);
 }
 
@@ -298,14 +301,14 @@ static struct {
 
 /* ------------------------------------------------------------ bytes and hashes */
 
-static void put32(uint8_t *p, uint32_t v) {
-  p[0] = v & 0xff; p[1] = (v >> 8) & 0xff; p[2] = (v >> 16) & 0xff; p[3] = (v >> 24) & 0xff;
-}
-static uint32_t get32(const uint8_t *p) {
-  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-static void put16(uint8_t *p, uint16_t v) { p[0] = v & 0xff; p[1] = (v >> 8) & 0xff; }
-static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+/* little-endian fields; every build target is little-endian (the Teensy's Cortex-M4 reads and writes unaligned words) */
+static inline void put32(uint8_t *p, uint32_t v) { memcpy(p, &v, 4); }
+static inline uint32_t get32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static inline void put16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2); }
+static inline uint16_t get16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
+
+/* the subject of a link that names nothing (a budget's end, hold, resume) */
+static const uint8_t ZERO_SUBJECT[32] = {0};
 
 /* SHA-256 over an ASCII tag and up to three byte strings (lib hash.js H) */
 static void H(uint8_t out[32], const char *tag, const uint8_t *a, size_t al,
@@ -482,11 +485,15 @@ static void state_load(void) {
  * firmware's ECC globals to derive, so they are saved first and put back after: a pending
  * sign may be using them. 0 without a PIN (no K132).
  */
-static int edge_secret_salted(const char *info, const uint8_t *salt33, uint8_t out[32]) {
+/* K132 is set (a PIN is set and the profile is encrypted) */
+static int have_k132(void) {
   uint8_t t = 0;
   if (profilemode == NONENCRYPTEDPROFILE) return 0;
   okeeprom_eeget_ecckey(&t, 132);
-  if (t == 0) return 0; /* no K132: no PIN set yet */
+  return t != 0;
+}
+static int edge_secret_salted(const char *info, const uint8_t *salt33, uint8_t out[32]) {
+  if (!have_k132()) return 0;
   uint8_t save_priv[32], save_pub[65], save_type = type;
   memcpy(save_priv, ecc_private_key, 32);
   memcpy(save_pub, ecc_public_key, 65);
@@ -507,15 +514,17 @@ static int edge_secret_salted(const char *info, const uint8_t *salt33, uint8_t o
  * the same on every device made from the same backup. There is no Edge key without a salt:
  * ensure_identity draws one before anything asks for the key.
  */
-static int edge_key_with(const struct edge_state *s, uint8_t priv[32]) {
+/* HKDF(salt = 0x28 . the state's salt, K132, info) - 0 when the state has no salt or there is no K132 */
+static int salted_secret(const struct edge_state *s, const char *info, uint8_t out[32]) {
   if (!s->salted) return 0;
   uint8_t salt33[33];
   salt33[0] = 0x28;
   memcpy(salt33 + 1, s->salt, 32);
-  int ok = edge_secret_salted("onlykey/edge/v1", salt33, priv);
+  int ok = edge_secret_salted(info, salt33, out);
   memset(salt33, 0, sizeof(salt33));
   return ok;
 }
+static int edge_key_with(const struct edge_state *s, uint8_t priv[32]) { return salted_secret(s, "onlykey/edge/v1", priv); }
 static int edge_private_key(uint8_t priv[32]) { return edge_key_with(&st, priv); }
 
 /*
@@ -526,12 +535,8 @@ static int edge_private_key(uint8_t priv[32]) { return edge_key_with(&st, priv);
  * OKEDGE_WARM. The input is fixed-length, so the keyed hash cannot be extended to another seq.
  */
 static int gate_token(uint32_t seq, uint8_t out[GATE_TOKEN_BYTES]) {
-  if (!st.salted) return 0;
-  uint8_t salt33[33], key[32], seq4[4], full[32];
-  salt33[0] = 0x28;
-  memcpy(salt33 + 1, st.salt, 32);
-  int ok = edge_secret_salted("onlykey/edge/gate/v1", salt33, key);
-  memset(salt33, 0, sizeof(salt33));
+  uint8_t key[32], seq4[4], full[32];
+  int ok = salted_secret(&st, "onlykey/edge/gate/v1", key);
   if (ok) {
     put32(seq4, seq);
     H(full, "OKEDGE-GATE-v1", key, 32, ident.device_id, ID_BYTES, seq4, 4);
@@ -555,17 +560,10 @@ static int gate_token(uint32_t seq, uint8_t out[GATE_TOKEN_BYTES]) {
 #define MLDSA_CHECKPOINT_KEY 0
 #define MLDSA_OWNER_KEY 1
 static int mldsa_keypair(uint8_t which, uint8_t *pk) {
-  uint8_t seed[32], salt33[33];
-  int ok;
-  if (which == MLDSA_CHECKPOINT_KEY) {
-    if (!st.salted) return 0;
-    salt33[0] = 0x28;
-    memcpy(salt33 + 1, st.salt, 32);
-    ok = edge_secret_salted("onlykey/edge/mldsa/v1", salt33, seed);
-    memset(salt33, 0, sizeof(salt33));
-  } else {
-    ok = edge_secret_salted("onlykey/edge/owner-mldsa/v1", NULL, seed);
-  }
+  uint8_t seed[32];
+  int ok = which == MLDSA_CHECKPOINT_KEY
+    ? salted_secret(&st, "onlykey/edge/mldsa/v1", seed)
+    : edge_secret_salted("onlykey/edge/owner-mldsa/v1", NULL, seed);
   if (ok) ok = PQCP_MLDSA_NATIVE_MLDSA65_keypair_internal(pk, ctap_buffer, seed) == 0;
   memset(seed, 0, sizeof(seed));
   return ok;
@@ -662,9 +660,7 @@ static int ensure_identity(void) {
    * writes its continue link, CONT_FROM_ID). The salt is drawn now.
    */
   if (!st.salted) {
-    uint8_t t = 0;
-    okeeprom_eeget_ecckey(&t, 132);
-    if (profilemode == NONENCRYPTEDPROFILE || t == 0) return 0; /* no K132 yet: nothing to salt for */
+    if (!have_k132()) return 0; /* no K132 yet: nothing to salt for */
     RNG2(st.salt, 32);
     st.salted = 1;
     state_save();
@@ -717,9 +713,12 @@ static void checkpoint(int show_head) {
  * which other logs were made with the same secret, while each device's salt stays on that device.
  * It signs only through OKEDGE_CERTIFY.
  */
+static int owner_key(uint8_t priv[32], uint8_t pub[64]) {
+  return edge_secret_salted("onlykey/edge/owner/v1", NULL, priv) && uECC_compute_public_key(priv, pub, uECC_secp256r1());
+}
 static int owner_pub(uint8_t pub[64]) {
   uint8_t priv[32];
-  int ok = edge_secret_salted("onlykey/edge/owner/v1", NULL, priv) && uECC_compute_public_key(priv, pub, uECC_secp256r1());
+  int ok = owner_key(priv, pub);
   memset(priv, 0, 32);
   return ok;
 }
@@ -757,9 +756,7 @@ static void certify_sign(uint8_t approval, const uint8_t subject[32]) {
   mid[0] = approval;
   put32(mid + 1, st.seq);
   H(digest, "OKEDGE-CERTIFY-v1", who, sizeof(who), mid, 5, subject, 32);
-  int ok = edge_secret_salted("onlykey/edge/owner/v1", NULL, priv)
-        && uECC_compute_public_key(priv, pub, uECC_secp256r1())
-        && uECC_sign(priv, digest, 32, sig, uECC_secp256r1());
+  int ok = owner_key(priv, pub) && uECC_sign(priv, digest, 32, sig, uECC_secp256r1());
   memset(priv, 0, 32);
   if (!ok) { status(EDGE_SIGN_FAILED); return; }
   memcpy(r, mid, 5);
@@ -964,10 +961,9 @@ static struct budget *live_budget(uint32_t id) {
 
 /* ends a live budget: its RAM is cleared and a grant-end link names it and how it ended */
 static void end_budget(struct budget *b, uint8_t how) {
-  uint8_t zero[32] = {0};
   uint32_t id = b->id;
   memset(b, 0, sizeof(*b));
-  append(OP_GRANT_END, how, 0, 0, zero, id, 0, NULL);
+  append(OP_GRANT_END, how, 0, 0, ZERO_SUBJECT, id, 0, NULL);
 }
 
 /*
@@ -1002,6 +998,31 @@ static void press_wait(uint8_t what, const uint8_t subject[32]) {
 #endif
 }
 
+/* the TX start's token is this subject's at this head: SHA256("OKEDGE-TX-v1" || head || subject || intent) */
+static int tx_matches(const uint8_t subject[32]) {
+  uint8_t t[32];
+  H(t, "OKEDGE-TX-v1", st.head, 32, subject, 32, tx_intent, 16); /* zeros when no intent */
+  return memcmp(t, tx_token, 32) == 0;
+}
+
+/*
+ * A use budget i pays through scope sc: both counts, the next value of the budget's series revealed
+ * (v_i = H^(n-i)(seed), lib grants.reveal) in a self-press link that owes a receipt, byte 46 naming
+ * the scope that paid; intent (16 bytes, or NULL) welded in with it.
+ */
+static uint8_t spend_intent[16];
+static void spend(int i, struct scope *sc, uint8_t op, uint8_t slot, const uint8_t subject[32], const uint8_t *intent) {
+  struct budget *b = &budgets[i];
+  uint8_t reveal[32];
+  b->used++;
+  sc->used++;
+  hash_times(reveal, b->seed, b->uses - b->used);
+  if (intent) { memcpy(spend_intent, intent, 16); next_intent = spend_intent; }
+  append_scoped(op, DECISION_SELF_PRESS, slot, FLAG_OWES_RECEIPT | FLAG_BUDGET_SPENT, subject, b->id, b->used,
+                (uint8_t)(sc - b->scopes + 1), reveal);
+  memset(reveal, 0, 32);
+}
+
 /*
  * OKEDGE_CERTIFY {subject 32}. Paid by a budget exactly as a sign is: announced by its TX start
  * (this subject, after this head), a live budget with a CERTIFY scope, unlocked and nothing owed -
@@ -1010,31 +1031,20 @@ static void press_wait(uint8_t what, const uint8_t subject[32]) {
  * waits for the physical press (certify_pressed); an announced certification no budget can pay
  * spends its TX start.
  */
-static uint8_t certify_intent[16];
 static void certify(const uint8_t subject[32]) {
   state_load();
   if (!ensure_identity()) { status(EDGE_NEED_PIN); return; }
   if (started) {
-    uint8_t t[32];
-    H(t, "OKEDGE-TX-v1", st.head, 32, subject, 32, tx_intent, 16);
-    int announced = memcmp(t, tx_token, 32) == 0;
+    int announced = tx_matches(subject);
     struct scope *sc;
     int i = announced ? budget_for(OP_CERTIFY, CERTIFY_SLOT, NULL, &sc) : -1;
     if (i >= 0) {
-      struct budget *b = &budgets[i];
-      uint8_t reveal[32];
-      b->used++;
-      sc->used++;
-      hash_times(reveal, b->seed, b->uses - b->used); /* v_i = H^(n-i)(seed) (lib grants.reveal) */
-      if (tx_has_intent) { memcpy(certify_intent, tx_intent, 16); next_intent = certify_intent; }
-      append_scoped(OP_CERTIFY, DECISION_SELF_PRESS, CERTIFY_SLOT, FLAG_OWES_RECEIPT | FLAG_BUDGET_SPENT, subject, b->id,
-                    b->used, (uint8_t)(sc - b->scopes + 1), reveal);
-      memset(reveal, 0, 32);
+      spend(i, sc, OP_CERTIFY, CERTIFY_SLOT, subject, tx_has_intent ? tx_intent : NULL);
       certify_sign(APPROVED_BY_BUDGET, subject);
       return;
     }
     started = 0;
-    if (!announced && refused_tx < 255) refused_tx++;
+    if (!announced) count_refused();
   }
   press_drop();
   memcpy(press.subject, subject, 32);
@@ -1162,9 +1172,8 @@ static void resume_pressed(void) {
   if (owes()) { status(EDGE_RECEIPT_OWED); return; }
   if (!head_is(press.verified, press.verified_len)) { status(EDGE_STALE_HEAD); return; }
   if (b->on_hold) {
-    uint8_t zero[32] = {0};
     b->on_hold = 0;
-    append(OP_GRANT_RESUME, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, zero, b->id, 0, NULL);
+    append(OP_GRANT_RESUME, OKEDGE_DECISION_APPROVE, 0, FLAG_PRESS_OBSERVED, ZERO_SUBJECT, b->id, 0, NULL);
   }
   status(EDGE_OK);
 }
@@ -1268,9 +1277,7 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
   state_load();
   if (started) {
     /* is this request, after THIS head, the one the TX start was for? */
-    uint8_t t[32];
-    H(t, "OKEDGE-TX-v1", st.head, 32, pend.subject, 32, tx_intent, 16); /* zeros when no intent */
-    if (memcmp(t, tx_token, 32) != 0) {
+    if (!tx_matches(pend.subject)) {
       /*
        * Not the announced request: refused, not pressed - no prompt, no link. The TX start
        * is spent and the refusal is counted in HEAD byte 60. The core runs the request at
@@ -1279,7 +1286,7 @@ void okplugin_edge_primed(uint8_t opcode, uint8_t slot, const uint8_t *msg, size
        */
       started = 0;
       pend.refuse = EDGE_TX_MISMATCH;
-      if (refused_tx < 255) refused_tx++;
+      count_refused();
       user_input_mode = USER_INPUT_NONE;
       pend.press = 0;
       return;
@@ -1350,15 +1357,7 @@ void okplugin_edge_decision(int decision) {
   if (decision == OKEDGE_DECISION_APPROVE && pend.budget >= 0) {
     struct scope *sc;
     if (budget_for(op, pend.slot, pend.has_label ? pend.label : NULL, &sc) == pend.budget) { /* still started, live, with room */
-      struct budget *b = &budgets[pend.budget];
-      uint8_t reveal[32];
-      b->used++;
-      sc->used++;
-      hash_times(reveal, b->seed, b->uses - b->used); /* v_i = H^(n-i)(seed) (lib grants.reveal) */
-      if (pend.has_intent) next_intent = pend.intent; /* the intent, welded in with the use */
-      append_scoped(op, DECISION_SELF_PRESS, pend.slot, FLAG_OWES_RECEIPT | FLAG_BUDGET_SPENT, pend.subject, b->id, b->used,
-                    (uint8_t)(sc - b->scopes + 1), reveal); /* byte 46: which scope paid */
-      memset(reveal, 0, 32);
+      spend(pend.budget, sc, op, pend.slot, pend.subject, pend.has_intent ? pend.intent : NULL);
       return;
     }
   }
@@ -1373,32 +1372,22 @@ void okplugin_edge_decision(int decision) {
  * always does (an announced derive no budget can pay spends its TX start, as a sign's does). A touch derive - a secret
  * the person reveals with a press - is never paid: the gate asks only for floor NONE, and the mode byte is checked.
  */
-static uint8_t derive_intent[16];
 int okplugin_edge_pay_derive(const uint8_t *payload, int len) {
   if (len != DERIVE_PAYLOAD || payload[0] != DERIVE_TOUCHLESS) return 0;
   state_load();
   if (!started) return 0;
-  uint8_t subject[32], t[32];
+  uint8_t subject[32];
   H(subject, NULL, payload, (size_t)len, NULL, 0, NULL, 0);
-  H(t, "OKEDGE-TX-v1", st.head, 32, subject, 32, tx_intent, 16);
-  int announced = memcmp(t, tx_token, 32) == 0;
+  int announced = tx_matches(subject);
   struct scope *sc;
   int i = announced && ensure_identity() ? budget_for(OP_DERIVE, DERIVE_SLOT, payload + 1, &sc) : -1;
   if (i < 0) {
     /* not the announced request, or nothing can pay it: an ordinary derive - the TX start is spent either way */
     started = 0;
-    if (!announced && refused_tx < 255) refused_tx++;
+    if (!announced) count_refused();
     return 0;
   }
-  struct budget *b = &budgets[i];
-  uint8_t reveal[32];
-  b->used++;
-  sc->used++;
-  hash_times(reveal, b->seed, b->uses - b->used); /* v_i = H^(n-i)(seed) (lib grants.reveal) */
-  if (tx_has_intent) { memcpy(derive_intent, tx_intent, 16); next_intent = derive_intent; }
-  append_scoped(OP_DERIVE, DECISION_SELF_PRESS, DERIVE_SLOT, FLAG_OWES_RECEIPT | FLAG_BUDGET_SPENT, subject, b->id, b->used,
-                (uint8_t)(sc - b->scopes + 1), reveal);
-  memset(reveal, 0, 32);
+  spend(i, sc, OP_DERIVE, DERIVE_SLOT, subject, tx_has_intent ? tx_intent : NULL);
   return 1;
 }
 
@@ -1634,9 +1623,8 @@ void okplugin_edge_recv(uint8_t *buffer) {
       struct budget *b = live_budget(id);
       if (!b) { status(EDGE_NO_SUCH_BUDGET); return; }
       if (!b->on_hold) {
-        uint8_t zero[32] = {0};
         b->on_hold = 1;
-        append(OP_GRANT_HOLD, OKEDGE_DECISION_APPROVE, 0, 0, zero, id, 0, NULL);
+        append(OP_GRANT_HOLD, OKEDGE_DECISION_APPROVE, 0, 0, ZERO_SUBJECT, id, 0, NULL);
       }
       status(EDGE_OK);
       return;
@@ -1667,16 +1655,13 @@ void okplugin_edge_recv(uint8_t *buffer) {
       uint32_t ref = get32(buffer + 6);
       uint8_t code = buffer[10];
       if (!st.owes || st.owed.seq != ref) { status(EDGE_NO_RECEIPT_WAITING); return; }
-      uint8_t ref4[4], subject[32];
-      put32(ref4, ref);
-      SHA256_CTX ctx;
-      sha256_init(&ctx);
-      sha256_update(&ctx, (const unsigned char *)"OKEDGE-RECEIPT-v1", sizeof("OKEDGE-RECEIPT-v1") - 1);
-      sha256_update(&ctx, ref4, 4);
-      sha256_update(&ctx, st.owed.head, 32);
-      sha256_update(&ctx, &code, 1);
-      sha256_update(&ctx, buffer + 11, 32);
-      sha256_final(&ctx, subject);
+      /* ref_seq u32 . head[ref_seq] 32 . code u8 . msg_hash 32 */
+      uint8_t in[69], subject[32];
+      put32(in, ref);
+      memcpy(in + 4, st.owed.head, 32);
+      in[36] = code;
+      memcpy(in + 37, buffer + 11, 32);
+      H(subject, "OKEDGE-RECEIPT-v1", in, sizeof(in), NULL, 0, NULL, 0);
       append(OP_RECEIPT, code, 0, 0, subject, ref, 0, NULL); /* the weld pays ref */
       complete_fulfilled(); /* its budget, if this was its last open use */
       /* a checkpoint at the receipt's link (or the budget's end after it): seq . zeros, then its signatures */
