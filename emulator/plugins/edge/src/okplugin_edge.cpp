@@ -87,6 +87,7 @@ extern void okcrypto_hkdf_info(const void *salt, const void *inputKey, void *out
 #define SEQ_NONE 0xFFFFFFFFUL
 #define LINK_BYTES 64
 #define ID_BYTES 16
+#define GATE_TOKEN_BYTES 28 /* a checkpoint's gate token: the rest of its 64-byte first report */
 
 #define MAX_LIVE 4      /* live budgets at once */
 #define MAX_SCOPES 4    /* scopes per budget */
@@ -518,6 +519,30 @@ static int edge_key_with(const struct edge_state *s, uint8_t priv[32]) {
 static int edge_private_key(uint8_t priv[32]) { return edge_key_with(&st, priv); }
 
 /*
+ * The gate token of a checkpoint at `seq`: the first GATE_TOKEN_BYTES of
+ *   SHA256("OKEDGE-GATE-v1" || gate key || device_id || seq (u32 LE))
+ * where gate key = HKDF(salt = 0x28 . this device's salt, K132, "onlykey/edge/gate/v1"). Only this
+ * key makes or checks one; a host keeps the token beside the checkpoint and shows it back with
+ * OKEDGE_WARM. The input is fixed-length, so the keyed hash cannot be extended to another seq.
+ */
+static int gate_token(uint32_t seq, uint8_t out[GATE_TOKEN_BYTES]) {
+  if (!st.salted) return 0;
+  uint8_t salt33[33], key[32], seq4[4], full[32];
+  salt33[0] = 0x28;
+  memcpy(salt33 + 1, st.salt, 32);
+  int ok = edge_secret_salted("onlykey/edge/gate/v1", salt33, key);
+  memset(salt33, 0, sizeof(salt33));
+  if (ok) {
+    put32(seq4, seq);
+    H(full, "OKEDGE-GATE-v1", key, 32, ident.device_id, ID_BYTES, seq4, 4);
+    memcpy(out, full, GATE_TOKEN_BYTES);
+  }
+  memset(key, 0, sizeof(key));
+  memset(full, 0, sizeof(full));
+  return ok;
+}
+
+/*
  * THE ML-DSA-65 TWINS. Each P-256 signature Edge makes - a checkpoint, an owner certification - has an
  * ML-DSA-65 signature beside it over the same digest (FIPS 204, pure, empty context), and a host
  * requires both: the pair holds while either algorithm does. The ML-DSA keys are derived like the
@@ -664,12 +689,14 @@ static int ensure_identity(void) {
  * The confirmation: two signatures over (seq, head) (lib chain.checkpointDigest)
  *   SHA256("OKEDGE-CKPT-v1" || device_id || seq (u32 LE) || head)
  * by the P-256 checkpoint key and its ML-DSA-65 twin.
- * reply: seq u32 . head 32 (show_head) or 32 zero bytes; then the 64-byte P-256 signature; then the
- * ML-DSA-65 signature (MLDSA_SIG_SIZE bytes). The head is shown only to a host that proved it
- * (PROVE_HEAD); a signature over a head the host does not hold verifies nothing for it.
+ * reply: seq u32 . head 32 (show_head) or 32 zero bytes . gate token 28 (gate_token); then the 64-byte
+ * P-256 signature; then the ML-DSA-65 signature (MLDSA_SIG_SIZE bytes). The head is shown only to a
+ * host that proved it (PROVE_HEAD, WARM); a signature over a head the host does not hold verifies
+ * nothing for it.
  */
+static int gate_token(uint32_t seq, uint8_t out[GATE_TOKEN_BYTES]);
 static void checkpoint(int show_head) {
-  uint8_t seq4[4], digest[32], sig[64], priv[32], r[36];
+  uint8_t seq4[4], digest[32], sig[64], priv[32], r[64];
   put32(seq4, st.seq);
   H(digest, "OKEDGE-CKPT-v1", ident.device_id, ID_BYTES, seq4, 4, st.head, 32);
   int ok = edge_private_key(priv) && uECC_sign(priv, digest, 32, sig, uECC_secp256r1());
@@ -678,7 +705,8 @@ static void checkpoint(int show_head) {
   memset(r, 0, sizeof(r));
   memcpy(r, seq4, 4);
   if (show_head) memcpy(r + 4, st.head, 32);
-  reply(r, 36);
+  if (!gate_token(st.seq, r + 36)) { status(EDGE_SIGN_FAILED); return; }
+  reply(r, 64);
   reply(sig, 64);
   if (!mldsa_sign_reply(MLDSA_CHECKPOINT_KEY, digest)) status(EDGE_SIGN_FAILED);
 }
@@ -1509,7 +1537,7 @@ void okplugin_edge_recv(uint8_t *buffer) {
       }
       r[56] = mask;
       r[57] = st.owes;
-      r[59] = OKEDGE_CAPS_CERTIFY_HEADPROOF | OKEDGE_CAPS_OPS_CHECKPOINT | OKEDGE_CAPS_LOSS_ANCHOR;
+      r[59] = OKEDGE_CAPS_CERTIFY_HEADPROOF | OKEDGE_CAPS_OPS_CHECKPOINT | OKEDGE_CAPS_LOSS_ANCHOR | OKEDGE_CAPS_WARM_GATE;
       r[60] = refused_tx;
       reply(r, 62);
       return;
@@ -1537,6 +1565,21 @@ void okplugin_edge_recv(uint8_t *buffer) {
       if (get32(buffer + 6) != st.seq || !head_is(buffer + 10, 32)) { status(EDGE_STALE_HEAD); return; }
       checkpoint(1);
       return;
+    case OKEDGE_WARM: {
+      /*
+       * {seq u32, gate token 28}: a token this key made for a checkpoint at seq, no further than OKEDGE_WARM_REACH behind
+       * the key's seq and not ahead of it - then the confirmation with the head shown, as PROVE_HEAD gives it
+       */
+      uint32_t seq = get32(buffer + 6);
+      uint8_t want[GATE_TOKEN_BYTES], diff = 0;
+      int in_reach = st.seq != SEQ_NONE && seq <= st.seq && st.seq - seq <= OKEDGE_WARM_REACH;
+      if (!in_reach || !gate_token(seq, want)) { memset(want, 0, sizeof(want)); status(EDGE_GATE_REFUSED); return; }
+      for (int i = 0; i < GATE_TOKEN_BYTES; i++) diff |= want[i] ^ buffer[10 + i];
+      memset(want, 0, sizeof(want));
+      if (diff) { status(EDGE_GATE_REFUSED); return; }
+      checkpoint(1);
+      return;
+    }
     case OKEDGE_PUBKEY:
       if (buffer[6]) owner_pubkey_reply();
       else reply(ident.pub, 64);
