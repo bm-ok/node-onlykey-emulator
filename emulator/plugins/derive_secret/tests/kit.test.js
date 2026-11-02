@@ -181,8 +181,10 @@ module.exports = function register({ it }, ctx) {
     };
     chunk._resetPacketCounter(199);
     let refused = null;
-    try { await derive(device, signal, 'okedge/test/a', { confirm: wrongCode }); } catch (e) { refused = String(e && e.message); }
-    assert.ok(refused, 'a derive with the wrong code came back with a secret');
+    let got = null;
+    try { got = await derive(device, signal, 'okedge/test/a', { confirm: wrongCode }); } catch (e) { refused = String(e && e.message); }
+    if (!refused) log(`the wrong code was answered: ${got}`);
+    assert.ok(refused, `a derive with the wrong code was answered (${String(got).slice(0, 80)})`);
     log(`refused (packet 200): ${refused.slice(0, 80)}`);
     chunk._resetPacketCounter(0);
     const fresh = await derive(device, signal, 'okedge/test/a', { confirm: presser(device, log) });
