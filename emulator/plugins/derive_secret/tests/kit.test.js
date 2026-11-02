@@ -169,8 +169,8 @@ module.exports = function register({ it }, ctx) {
    * test seam - the refused derive numbered high, then a new page from 1.
    */
   it('derive_secret: a refused derive leaves no packet number behind - a new page numbering from 1 is answered', async ({ device, assert, signal, log }) => {
-    await device.restart({ signal });
-    await device.unlock(ctx.PINS.primary, { signal });
+    /* the code, set: an unwritten field 30 reads as one press (okcore_web_agent_derive_mode), which any button answers */
+    await setDeriveMode(device, signal, assert, MODE_CHALLENGE);
     const { chunk } = ctx.requireLib('node-onlykey-lib/protocol');
     /* a wrong first button ends the key's code wait at once (ctap_challenge_test: -2) - the derive is refused */
     const wrongCode = async ({ digits }) => {
