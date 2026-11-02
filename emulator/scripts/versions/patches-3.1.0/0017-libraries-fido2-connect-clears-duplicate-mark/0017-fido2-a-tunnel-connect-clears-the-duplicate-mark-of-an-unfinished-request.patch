@@ -1,0 +1,40 @@
+From b6d31ddf71ff815f0e47623fb130c84a57f133f4 Mon Sep 17 00:00:00 2001
+From: bmatusiak <bmatusiak@gmail.com>
+Date: Mon, 2 Nov 2026 04:50:15 -0500
+Subject: [PATCH] fido2: a tunnel connect clears the duplicate mark of an
+ unfinished request
+
+A request packet that arrives through the WebAuthn tunnel is dropped as a
+duplicate when its opt3 is not above the last one taken
+(last_request_opt3), and the mark is cleared only when a request's final
+packet is handled. A request that never reaches its final packet - the
+browser cancelled the next ceremony, the page was closed - leaves the
+mark set. A host numbers its packets from 1 again after it connects (a
+new page), so its next requests are dropped with an empty success until
+its numbers pass the old mark. 3.0.4 kept the mark in
+packet_buffer_details[3], which wipetasks() cleared.
+
+A tunnel connect (OKCONNECT) starts a new transit session; it now clears
+the mark. A repeated packet inside one request is still dropped.
+---
+ fido2/ok_extension.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/fido2/ok_extension.cpp b/fido2/ok_extension.cpp
+index 5e3eac0..cf41b4e 100644
+--- a/fido2/ok_extension.cpp
++++ b/fido2/ok_extension.cpp
+@@ -201,6 +201,10 @@ int16_t bridge_to_onlykey(uint8_t *_appid, uint8_t *keyh, int handle_len, uint8_
+         outputmode = DISCARD; // Discard output
+         if (cmd == OKCONNECT && !CRYPTO_AUTH) {
+             large_buffer_offset = 0;
++            // Every OKCONNECT makes a new transit key below, so no packet sealed
++            // before it continues a request: the duplicate mark of a request that
++            // never reached its final packet is cleared with it.
++            last_request_opt3 = 0;
+             // Set time if not already set
+             set_time(client_handle);
+             memset(ecc_public_key, 0, sizeof(ecc_public_key));
+-- 
+2.55.0.windows.2
+
