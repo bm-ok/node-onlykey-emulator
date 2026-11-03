@@ -35,9 +35,24 @@ emu.writeHid = (data, iface) => { if (client) send(client, { t: 'host', iface, b
 const bridge = new GadgetBridge(emu);
 let started = false;
 
+/*
+ * THE REAL PORT (the USB-C one - dwc2, not dummy_hcd): the bridge plugs into the controller the gadget's UDC file names,
+ * else the first one listed, which on a Pi with dummy_hcd loaded is the virtual one. So the first plug names it here.
+ */
+const fs = require('fs');
+const UDC_FILE = `${GadgetBridge.GADGET_DIR}/UDC`;
+const realUdc = () => (arg('--udc', null) || fs.readdirSync('/sys/class/udc').find((u) => !u.startsWith('dummy_udc')));
+
 function plug(want) {
   try {
-    if (!started) { if (!want) return; bridge.start(); started = true; }
+    if (!started) {
+      if (!want) return;
+      const udc = realUdc();
+      if (!udc) throw new Error('no real USB device controller (dtoverlay=dwc2,dr_mode=peripheral)');
+      if (fs.readFileSync(UDC_FILE, 'utf8').trim() !== udc) { fs.writeFileSync(UDC_FILE, '\n'); fs.writeFileSync(UDC_FILE, `${udc}\n`); }
+      bridge.start();
+      started = true;
+    }
     else if (want) bridge.plug(); else bridge.unplug();
   } catch (err) { log(`${want ? 'plug' : 'unplug'}: ${err.message}`); }
   if (client) send(client, { t: 'plugged', plugged: bridge.plugged });
