@@ -100,15 +100,21 @@ class RemoteGadgetBridge {
 
   get plugged() { return this.cable; }
 
+  /*
+   * The state is taken at once: the daemon says the cable moved right after plug()/unplug() (ipc publishPlugged), before
+   * the relay's answer can arrive - its "plugged" corrects it if the Pi could not.
+   */
   plug() {
     if (!this.ready || this.cable) return false;
     send(this.sock, { t: 'plug' });
+    this.cable = true;
     return true;
   }
 
   unplug() {
     if (!this.ready || !this.cable) return false;
     send(this.sock, { t: 'unplug' });
+    this.cable = false;
     return true;
   }
 }
