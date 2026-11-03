@@ -49,7 +49,11 @@ function plug(want) {
       if (!want) return;
       const udc = realUdc();
       if (!udc) throw new Error('no real USB device controller (dtoverlay=dwc2,dr_mode=peripheral)');
-      if (fs.readFileSync(UDC_FILE, 'utf8').trim() !== udc) { fs.writeFileSync(UDC_FILE, '\n'); fs.writeFileSync(UDC_FILE, `${udc}\n`); }
+      if (fs.readFileSync(UDC_FILE, 'utf8').trim() !== udc) {
+        /* unbound first; the kernel answers "No such device" when it already was - not an error (use-udc.sh) */
+        try { fs.writeFileSync(UDC_FILE, '\n'); } catch { /* already unbound */ }
+        fs.writeFileSync(UDC_FILE, `${udc}\n`);
+      }
       bridge.start();
       started = true;
     }
