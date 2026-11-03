@@ -104,15 +104,19 @@ async function main() {
      */
     const kind = process.platform === 'win32' ? 'okvhid'
       : process.env.OKEMU_BRIDGE === 'uhid' ? 'uhid'
+      /* another machine's USB port, through a Pi's gadget (lib/remote-gadget-bridge.js, bin/relay.js) */
+      : process.env.OKEMU_BRIDGE === 'remote' ? 'remote'
       : 'gadget';
     const mod = {
       okvhid: '../lib/okvhid-bridge',
       uhid: '../lib/uhid-bridge',
       gadget: '../lib/gadget-bridge',
+      remote: '../lib/remote-gadget-bridge',
     }[kind];
 
     const HINT = {
       gadget: '  run  sudo ./scripts/gadget-setup.sh  once to enable it',
+      remote: '  OKEMU_RELAY=<pi>:8795 names the relay, and ~/.okemu-relay.token must match the one on the Pi',
       uhid: '  run  sudo ./scripts/setup-permissions.sh  once to enable it',
       okvhid: '  build, sign and install the driver once - see windows-driver\\README.md',
     };
