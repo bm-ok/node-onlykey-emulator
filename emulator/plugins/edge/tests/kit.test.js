@@ -1041,6 +1041,72 @@ module.exports = function register({ it }, ctx) {
       assert.equal(await txStartFor(device, h.head, agentPayload('okt after expiry'), { signal }), 'EDGE:0D', 'TX start went through under an expired budget');
     });
 
+  /*
+   * A PRESS LINK IS ACTIVITY (Brad, 2026-11-03: "any physical press, like grant, resets the timer ... automated
+   * presses reset it ... the press link does"). red-key's ship of 298 signs restarted and locked 60 minutes after its
+   * one press: the idle lockout counted only from the unlock and button presses, so a budget pressed once ran into
+   * it however busy it was. Here, with the lockout at 1 minute: unlocked at t0; the budget's pressed grant at ~40 s
+   * keeps the key unlocked at 80 s; a paid use (a self-press) at ~85 s keeps it unlocked at 130 s; a receipt is
+   * no press; and it still locks a minute after the last press link.
+   */
+  it('edge: a press link resets the idle lockout - a pressed grant and a budget\'s self-press each keep the key unlocked a minute more, then it locks',
+    async ({ device, assert, signal, log }) => {
+      const OKSETSLOT_GLOBAL = 0;
+      const LOCKOUT = 11; /* okcore.cpp OKSETSLOT field 11: TIMEOUT, in minutes */
+      const setLockout = async (minutes) => {
+        const since = device.mark(ctx.IFACE.VENDOR);
+        device.sendVendor({ msg: ctx.okmsg.MSG.OKSETSLOT, slot: OKSETSLOT_GLOBAL, field: LOCKOUT, payload: Buffer.from([minutes]) });
+        const ack = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Success|Error/, timeoutMs: 8000, signal });
+        assert.match(ctx.okmsg.text(ack).trim(), /^Success/, `the lockout of ${minutes} min was not set`);
+      };
+      /* HEAD every 10 s until `until` (the kit's watchdog wants progress every 30 s; HEAD is not activity) */
+      const waitUntil = async (until) => {
+        while (Date.now() < until) {
+          await device.sleep(Math.min(10000, Math.max(0, until - Date.now())), { signal });
+          await head(device, { signal });
+        }
+      };
+      const at = (t0) => `t0 + ${Math.round((Date.now() - t0) / 1000)} s`;
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+      await setLockout(1);
+      try {
+        /* t0: an unlock, the clock's last reset */
+        await device.restart({ signal });
+        await device.unlock(ctx.PINS.primary, { signal });
+        const t0 = Date.now();
+        const restarts = device.restarts;
+
+        await waitUntil(t0 + 40000);
+        await openBudget(device, 2, 'okt: a press link is activity', { signal });
+        log(`pressed grant at ${at(t0)}`);
+        await waitUntil(t0 + 80000);
+        assert.equal(device.restarts, restarts, 'the key locked within a minute of the pressed grant');
+
+        const payload = agentPayload('okt edge idle lockout');
+        assert.equal(await txStartFor(device, (await head(device, { signal })).head, payload, { signal }), 'EDGE:00');
+        const use = await selfPressedSign(device, payload, { signal });
+        const tu = Date.now();
+        log(`self-pressed use at ${at(t0)}`);
+        await waitUntil(t0 + 130000);
+        assert.equal(device.restarts, restarts, 'the key locked within a minute of the self-pressed use');
+
+        /* the receipt is no press: the lock still comes a minute after the use */
+        await receipt(device, use.seq, 'okt: paid, then idle', { signal });
+        const deadline = tu + 80000;
+        while (device.restarts === restarts && Date.now() < deadline) {
+          await device.sleep(5000, { signal });
+          if (device.restarts === restarts) await head(device, { signal }).catch(() => {});
+        }
+        log(`locked at ${at(t0)}`);
+        assert.ok(device.restarts > restarts, 'the key never locked after the last press link');
+      } finally {
+        /* the firmware's default, as the tests after this one expect */
+        await device.ensureUnlocked(ctx.PINS.primary, { signal });
+        await setLockout(30);
+      }
+    });
+
   /* R11 (Brad, 2026-10-02: back to 1024): a budget of 1024 uses opens - G is 1,024 hashes - and 1025 is refused */
   it('edge: a budget of 1024 uses opens at a press; 1025 is refused (R11)',
     async ({ device, assert, signal, log }) => {

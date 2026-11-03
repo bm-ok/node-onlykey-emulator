@@ -28,6 +28,7 @@
  * sectors live differs between them (EDGE_REGION below).
  */
 #include "core_pins.h" /* millis() */
+#include "elapsedMillis.h"
 #include "onlykey.h"
 #ifdef DEBUG /* defined by the firmware's own headers, so tested after onlykey.h */
 #include "Arduino.h" /* Serial: the debug console */
@@ -337,6 +338,8 @@ static void H(uint8_t out[32], const char *tag, const uint8_t *a, size_t al,
  * answer; any other request clears it.
  */
 extern int outputmode;
+/* okcore.cpp: the idle lockout's clock (OnlyKey.ino locks and restarts the key when it passes TIMEOUT minutes); append_scoped resets it */
+extern elapsedMillis idletimer;
 #define WEB_PICKUP_MAX 3
 #define WEB_MORE_MAX 2
 static uint8_t web_out[2 * WEB_PICKUP_MAX * LINK_BYTES];
@@ -871,6 +874,8 @@ static void append_scoped(uint8_t op, uint8_t decision, uint8_t slot, uint8_t fl
   put32(link + 40, grant_id);
   put16(link + 44, grant_step);
   weld_in(&st, link, reveal);
+  /* a press link - a physical press (FLAG_PRESS_OBSERVED) or a budget's self-press - restarts the idle lockout's clock */
+  if ((flags & FLAG_PRESS_OBSERVED) || decision == DECISION_SELF_PRESS) idletimer = 0;
 }
 
 /* ------------------------------------------------------------ budgets */
