@@ -1069,12 +1069,19 @@ module.exports = function register({ it }, ctx) {
       const at = (t0) => `t0 + ${Math.round((Date.now() - t0) / 1000)} s`;
       await device.ensureUnlocked(ctx.PINS.primary, { signal });
       await clearDebts(device, { signal, log });
-      await setLockout(1);
       try {
         /* t0: an unlock, the clock's last reset */
         await device.restart({ signal });
         await device.unlock(ctx.PINS.primary, { signal });
         const t0 = Date.now();
+        /*
+         * THE LOCKOUT IS SET AFTER THE UNLOCK, NEVER BEFORE (the 0.0.14 release gate, 2026-11-04): the firmware applies
+         * it at once (okcore.cpp OKSETSLOT 11: TIMEOUT[0] = the minutes), and the test before this one leaves the key idle
+         * for 62 s (HEAD is not activity) - set first, the key was already past a 1-minute lockout and locked on the
+         * spot. That lock's restart was taken for this test's own, whose restart request then restarted the key again
+         * as the PIN was typed, and the PIN was lost. After the unlock the idle clock starts from t0.
+         */
+        await setLockout(1);
         const restarts = device.restarts;
 
         await waitUntil(t0 + 40000);
