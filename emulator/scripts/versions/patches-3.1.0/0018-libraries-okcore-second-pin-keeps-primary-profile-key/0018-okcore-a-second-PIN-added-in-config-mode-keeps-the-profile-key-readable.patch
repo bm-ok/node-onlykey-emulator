@@ -1,0 +1,49 @@
+From 57f9233c91b2006eb5ccf1f45987ccf247544397 Mon Sep 17 00:00:00 2001
+From: bmatusiak <bmatusiak@gmail.com>
+Date: Tue, 3 Nov 2026 22:26:17 -0500
+Subject: [PATCH] okcore: a second PIN added in config mode keeps the profile
+ key readable
+
+One profile key encrypts the slots and keys of both profiles. It is
+stored wrapped under a hash of the nonce2 mask, the chip ID, a
+Curve25519 shared secret and the nonce, and an unlock picks the shared
+secret by the second-profile mode: STDPROFILE2 uses the primary PIN key
+with the second PIN key, any other mode the primary PIN key with itself.
+
+okcore_flashset_2ndpinhashpublic() re-wraps the profile key under the
+two-PIN secret whenever a second PIN is set, but recorded STDPROFILE2
+only while the key was being set up (!initcheck). On a key set up with
+its primary PIN alone and given a second PIN later in config mode, the
+mode stays as it was. The next unlock with the primary PIN still passes
+(the PIN hash does not involve the profile key) and unwraps the profile
+key with the one-profile secret, so every slot and key it protects -
+the derivation keys included - is read as something else.
+
+Record STDPROFILE2 whenever a second PIN is set on an encrypted second
+profile. A first setup is unchanged; a non-encrypted second profile
+(NONENCRYPTEDPROFILE) is untouched.
+---
+ onlykey/okcore.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/onlykey/okcore.cpp b/onlykey/okcore.cpp
+index 0620dbc..44c08c1 100644
+--- a/onlykey/okcore.cpp
++++ b/onlykey/okcore.cpp
+@@ -3165,7 +3165,12 @@ void okcore_flashset_2ndpinhashpublic(uint8_t *ptr) {
+     okeeprom_eeget_2ndprofilemode(&p2mode);
+     if (p2mode != NONENCRYPTEDPROFILE) { //profile key not used for plausible deniability mode or international fw
+ #ifdef STD_VERSION
+-        if (!initcheck) {
++        // The profile key is wrapped below under the shared secret of the two
++        // PINs, and an unlock unwraps it with that secret only when the mode
++        // is STDPROFILE2 (password.cpp). Record the mode whenever a second PIN
++        // is set, not only at first setup, so a second PIN added in config
++        // mode is unwrapped with the secret it was wrapped with.
++        if (p2mode != STDPROFILE2) {
+             // Default to standard profile
+             p2mode = STDPROFILE2;
+             okeeprom_eeset_2ndprofilemode(&p2mode);
+-- 
+2.55.0.windows.2
+

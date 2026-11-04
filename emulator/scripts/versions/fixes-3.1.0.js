@@ -11,6 +11,9 @@
  *   0013  okcore: wiping an RSA slot clears its key type, so the wiped slot reads as empty (sent 2026-10-26)
  *   0017  fido2: a tunnel connect clears the duplicate mark of a request cut off before its final packet, so a new
  *         page's requests are not dropped as duplicates (2026-11-02; not sent)
+ *   0018  okcore: a second-profile PIN added in config mode records the two-profile mode, so the primary profile's key
+ *         is unwrapped with the secret it was wrapped with - before it, the primary PIN still unlocked and every slot
+ *         and derived key read as something else (2026-11-03; not sent)
  *
  * SKIPPED (a SKIPPED file in its folder, beside its HOLD: the maintainer declined it - kept, never staged, never
  * proposed again):
@@ -33,7 +36,7 @@
  * build.json records which, as `fixes`.
  */
 module.exports = {
-  names: ["0012", "0013", "0015", "0017"],
+  names: ["0012", "0013", "0015", "0017", "0018"],
   experimental: ["0016"],
   held: ["0014"],
   byName: {
@@ -114,6 +117,16 @@ module.exports = {
         edits: [
           ["        outputmode = DISCARD; // Discard output\n        if (cmd == OKCONNECT && !CRYPTO_AUTH) {\n            large_buffer_offset = 0;\n            // Set time if not already set\n            set_time(client_handle);\n            memset(ecc_public_key, 0, sizeof(ecc_public_key));\n",
            "        outputmode = DISCARD; // Discard output\n        if (cmd == OKCONNECT && !CRYPTO_AUTH) {\n            large_buffer_offset = 0;\n            // Every OKCONNECT makes a new transit key below, so no packet sealed\n            // before it continues a request: the duplicate mark of a request that\n            // never reached its final packet is cleared with it.\n            last_request_opt3 = 0;\n            // Set time if not already set\n            set_time(client_handle);\n            memset(ecc_public_key, 0, sizeof(ecc_public_key));\n"],
+        ],
+      },
+    ],
+    "0018": [
+      /* 0018-okcore-a-second-PIN-added-in-config-mode-keeps-the-profile-key-readable.patch */
+      {
+        file: "libraries/onlykey/okcore.cpp",
+        edits: [
+          ["    okeeprom_eeget_2ndprofilemode(&p2mode);\n    if (p2mode != NONENCRYPTEDPROFILE) { //profile key not used for plausible deniability mode or international fw\n#ifdef STD_VERSION\n        if (!initcheck) {\n            // Default to standard profile\n            p2mode = STDPROFILE2;\n            okeeprom_eeset_2ndprofilemode(&p2mode);\n",
+           "    okeeprom_eeget_2ndprofilemode(&p2mode);\n    if (p2mode != NONENCRYPTEDPROFILE) { //profile key not used for plausible deniability mode or international fw\n#ifdef STD_VERSION\n        // The profile key is wrapped below under the shared secret of the two\n        // PINs, and an unlock unwraps it with that secret only when the mode\n        // is STDPROFILE2 (password.cpp). Record the mode whenever a second PIN\n        // is set, not only at first setup, so a second PIN added in config\n        // mode is unwrapped with the secret it was wrapped with.\n        if (p2mode != STDPROFILE2) {\n            // Default to standard profile\n            p2mode = STDPROFILE2;\n            okeeprom_eeset_2ndprofilemode(&p2mode);\n"],
         ],
       },
     ],
