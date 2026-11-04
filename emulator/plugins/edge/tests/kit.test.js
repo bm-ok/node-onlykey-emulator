@@ -1367,12 +1367,24 @@ module.exports = function register({ it }, ctx) {
         const held = await kitHead(device, { signal });
         edgeSvc.knownHead(held.seq, held.head, deviceIdOf(await pubkey(device, { signal })));
 
+        /*
+         * THE AGENT'S CARD (lib d67c64f, 2026-11-03: every budget is asked under an agent card, approve.js cardOf - the
+         * 0.0.14 release gate's second failure, a budget "refused - invalid" with none): certified on this key (one press),
+         * its keys the agent's own ssh and gpg names; the phone's cardOf picks it, checked with this key's owner keys.
+         */
+        const CARD = 'okt agent';
+        const uid = 'Claude (okt agent) <claude@okt>';
+        const { agents } = ctx.requireLib('node-onlykey-lib/edge');
+        const card = await edgeSvc.certifyAgent({ label: CARD, created: Math.floor(Date.now() / 1000), expires: 0, derive: { ssh: 'ssh://claude@okt', gpg: uid }, committer: { name: 'Claude (okt agent)', email: 'claude@okt' } }, { onPress: pressSoon });
+        const cards = { [CARD]: JSON.stringify({ card, certs: {} }) };
+        const cardOf = async (label) => agents.pick(cards, label, await edgeSvc.ownerPublicKey(), await edgeSvc.publicKeyPq('owner')).card;
+
         /* the phone, in-process: a paired computer (no agent key since 2026-10-08 - the pairing says who), Yes, and the press the key waits for */
         const seen = new Set();
         const channel = {
           async send(msg) {
             const r = await approve.approveRequest(msg, {
-              edge: edgeSvc, from: 'pc-okt', seen, ask: async () => 'approve',
+              edge: edgeSvc, from: 'pc-okt', seen, cardOf, ask: async () => 'approve',
               verifyCopy: async () => ({ ok: true, head: (await edgeSvc.head()).head }), onPress: pressSoon, timeoutMs: 30000,
             });
             return r.dropped ? null : r;
@@ -1388,10 +1400,10 @@ module.exports = function register({ it }, ctx) {
          * this key (two signatures, a press each) - handed to the agent's start, which makes none itself
          */
         const openpgp = ctx.requireLib('node-onlykey-lib/crypto/pgp');
-        const uid = 'Claude (okt agent) <claude@okt>';
         const made = await ctx.requireLib('node-onlykey-lib/keychain').cert.makeCertificate(okcrypto, openpgp, { label: uid, version: 2, expires: 0, onPress: pressSoon });
+        /* label: the card its budgets are asked under (agent.js controlHandlers) */
         const identity = {
-          ssh: 'ssh://claude@okt', gpgUid: uid, committer: { name: 'Claude (okt agent)', email: 'claude@okt' }, expires: 0,
+          label: CARD, ssh: 'ssh://claude@okt', gpgUid: uid, committer: { name: 'Claude (okt agent)', email: 'claude@okt' }, expires: 0,
           cert: { armored: made.armored, fingerprint: made.fingerprint, created: made.created, expires: made.expires, signPublic: Buffer.from(made.signPublic).toString('hex') },
         };
         svc = await startEdgeAgent({
