@@ -16,9 +16,11 @@
 extern "C" {
 int16_t bridge_u2f_to_solo(uint8_t *_appid, uint8_t *output, uint8_t *keyh, int keylen);
 int is_extension_request(uint8_t *kh, int len);
+}
+/* C++ linkage, as fido2/extensions.cpp defines them and ctap.cpp declares them: no header gives them C linkage, and a
+   compiler that decorates C++ variable names (MSVC) links a C-linkage declaration to a symbol that does not exist */
 extern uint16_t output_buffer_offset;
 extern uint16_t output_buffer_size;
-}
 
 #define VB_IN 58                  /* request bytes per report */
 #define VB_REQ_MAX (2 + 256 + VB_IN)  /* total length . credential ID, in whole reports */
