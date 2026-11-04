@@ -936,6 +936,86 @@ module.exports = function register({ it }, ctx) {
     });
 
   /*
+   * A BUDGET-PAID RSA SIGN OVER THE VENDOR BRIDGE (box, 2026-11-04, the APK signing dry run: the desktop's sign of an APK
+   * digest on RSA2, paid by its budget, never answered - "vendor-bridge: no answer in 30000 ms" - while the key wrote the
+   * paid link). The use above, but signed by the lib under test as the desktop app signs: okcrypto with the vendor
+   * bridge as its ctap (vendor_bridge's own kit test builds it the same way) - so the desktop's case is the kit's.
+   */
+  it('edge: an RSA sign a budget pays answers over the vendor bridge, as the desktop app asks it - a self-press under the budget',
+    async ({ device, assert, signal, log }) => {
+      const { pqc } = ctx.kit;
+      const RSA_2048 = 2;
+      const FEATURE_SIGN = 64;
+      const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = privateKey.export({ format: 'jwk' });
+      const pq = Buffer.concat([Buffer.from(jwk.p, 'base64url'), Buffer.from(jwk.q, 'base64url')]);
+      await pqc.readyForKeygen(device, { signal });
+      let since = device.mark(ctx.IFACE.VENDOR);
+      device.sendVendor({ msg: ctx.okmsg.MSG.OKSETSLOT, slot: 1, field: 22, payload: Buffer.from([1]) });
+      await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Success|Error/, timeoutMs: 8000, signal });
+      since = device.mark(ctx.IFACE.VENDOR);
+      for (let i = 0; i < pq.length; i += 57) {
+        device.sendVendor({ msg: ctx.okmsg.MSG.OKSETPRIV, slot: 2, field: RSA_2048 | FEATURE_SIGN, payload: pq.subarray(i, i + 57) });
+        await device.sleep(150, { signal });
+      }
+      const ack = await device.waitHid(ctx.IFACE.VENDOR, { since, match: /Successfully|Error/, timeoutMs: 20000, signal });
+      assert.match(ctx.okmsg.text(ack), /Successfully set RSA Key/);
+      await device.sleep(500, { signal });
+      await device.restart({ signal });
+      await device.ensureUnlocked(ctx.PINS.primary, { signal });
+      await clearDebts(device, { signal, log });
+
+      /* the desktop's host: the lib's okcrypto, its ctap the vendor bridge over the kit's device pipe */
+      const { createVendorBridgeCtap } = ctx.requireLib('node-onlykey-lib/transport/vendor-bridge');
+      const Rectify = ctx.requireLib('@bmatusiak/rectify');
+      const late = {};
+      const ctap = { vendorBridge: true, getAssertion: (p, o) => late.ctap.getAssertion(p, o) };
+      const { pipe } = ctx.kit.libstack.kitPipe(device);
+      const plugins = ['host', 'transport/embedded', 'session', 'device', 'okcrypto'].map((p) => ctx.requireLib(`node-onlykey-lib/plugins/${p}`));
+      plugins.config = { transport: { pipe }, okcrypto: { ctap, rpIds: ['ok-edge.bmatusiak.workers.dev'] } };
+      const app = await new Promise((resolve, reject) => {
+        const a = Rectify.build(plugins, (err, started) => (err ? reject(err) : resolve(started)));
+        a.start();
+      });
+      late.ctap = createVendorBridgeCtap(app.services.transport, { timeoutMs: 30000 });
+      try {
+        await app.services.okcrypto.connectTunnel();
+        const b = await openBudget(device, [{ op: OP_SIGN, slot: 2, cap: 1 }], 'okt: an RSA sign over the vendor bridge', { signal });
+        const message = Buffer.from('okt edge RSA sign over the vendor bridge');
+        const digest = sha256(message);
+        const h = await head(device, { signal });
+        assert.equal(await txStartFor(device, h.head, digest, { signal }), 'EDGE:00', 'TX start refused');
+        const t0 = Date.now();
+        const sent = device.mark(ctx.IFACE.VENDOR);
+        /* what the host wrote (the lib's transport), said when the sign fails: each vendor write's first bytes and when */
+        const writes = [];
+        const transport = app.services.transport;
+        const write = transport.write.bind(transport);
+        transport.write = (iface, bytes) => { writes.push(`${Date.now() - t0}ms ${iface} ${Buffer.from(bytes).subarray(0, 8).toString('hex')}`); return write(iface, bytes); };
+        /* what the key sent back over the bridge, said when the sign fails: each 0xFD report's index byte and its first bytes */
+        const sig = await app.services.okcrypto.sign(2, digest, { expectBytes: 256, timeoutMs: 30000 }).catch((e) => {
+          const fd = device.reportsSince(ctx.IFACE.VENDOR, sent).filter((r) => r[0] === 0xfd);
+          log(`the key's bridge reports after the sign was asked: ${fd.length} - ${fd.map((r) => `[${r[1].toString(16)}] ${Buffer.from(r.subarray(2, 10)).toString('hex')}`).join(', ')}`);
+          /* and the console's own order of events: each bridge report handed in, the sign, the stored answer */
+          const said = String(device.log.tail(60000)).split('\n').filter((l) => /VB recv|Stored Data|Signature =|wipe buffers|RSA data to sign|Received packet|NOT SUPPORTED/.test(l));
+          log(`the console: ${said.slice(-16).join(' / ')}`);
+          log(`the host's vendor writes after the sign was asked: ${writes.length} - ${writes.join(', ')}`);
+          throw e;
+        });
+        log(`the RSA sign answered over the vendor bridge in ${Date.now() - t0} ms: ${sig.length} bytes`);
+        assert.ok(crypto.verify('sha256', message, publicKey, Buffer.from(sig)), 'the signature does not verify');
+        const after = await headPast(device, h.seq, { signal });
+        const [l] = await pickup(device, after.seq, 1, { signal });
+        const f = chain.decodeLink(l.link);
+        assert.equal(JSON.stringify([f.op, f.decision, f.slot, f.grantId]), JSON.stringify([OP_SIGN, SELF_PRESS, 2, b.grantId]), 'not a self-press under the budget');
+        await receipt(device, f.seq, 'okt: the RSA sign over the vendor bridge', { signal });
+        await edge(device, GRANT_REVOKE, u32(b.grantId), { signal, text: true });
+      } finally {
+        await app.destroy();
+      }
+    });
+
+  /*
    * R19 NOT BUILT (spec session, 2026-10-03: the agent's commit key is a
    * derived classic key - D2 - so R19 waits; prove today's behaviour). A
    * composite PQC-PGP signature is TWO OKSIGNs to the RSA slot holding the
