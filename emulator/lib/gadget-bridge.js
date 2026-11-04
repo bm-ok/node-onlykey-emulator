@@ -157,6 +157,7 @@ class GadgetDevice {
       } catch (err) {
         if (err.code !== 'EAGAIN') throw err;
         this.txDropped++;
+        if (this.spec.name !== 'seremu') console.error(`[okemu] gadget ${this.spec.name}: a report dropped - the host is counted absent (${this.txDropped} dropped so far)`);
       }
       return;
     }
@@ -197,6 +198,14 @@ class GadgetDevice {
           const now = Date.now();
           if (!this.stalledSince) this.stalledSince = now;
           if (now - this.stalledSince > STALL_DROP_MS) {
+            /*
+             * SAID, FOR THE INTERFACES A HOST TALKS ON (box, 2026-11-04: a budget-paid RSA sign's 5-report answer never
+             * reached the desktop - "vendor-bridge: no answer in 30000 ms" - and nothing showed whether reports were
+             * dropped here). The debug console drops whenever no monitor reads it: not said.
+             */
+            if (this.spec.name !== 'seremu') {
+              console.error(`[okemu] gadget ${this.spec.name}: the host took nothing for ${now - this.stalledSince} ms - ${this.txQueue.length} report(s) dropped, the host counted absent`);
+            }
             this.txDropped += this.txQueue.length;
             this.txQueue.length = 0;
             this.stalledSince = 0;
