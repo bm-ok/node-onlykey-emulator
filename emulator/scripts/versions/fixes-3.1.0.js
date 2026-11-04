@@ -13,7 +13,7 @@
  *         page's requests are not dropped as duplicates (2026-11-02; not sent)
  *   0018  okcore: a second-profile PIN added in config mode records the two-profile mode, so the primary profile's key
  *         is unwrapped with the secret it was wrapped with - before it, the primary PIN still unlocked and every slot
- *         and derived key read as something else (2026-11-03; not sent)
+ *         and derived key read as something else (sent 2026-11-03)
  *
  * SKIPPED (a SKIPPED file in its folder, beside its HOLD: the maintainer declined it - kept, never staged, never
  * proposed again):

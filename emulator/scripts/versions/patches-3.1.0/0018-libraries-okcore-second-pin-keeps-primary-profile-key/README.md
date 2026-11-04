@@ -4,7 +4,7 @@
 **For:** trustcrypto/libraries `master` @ `fe9e293` (the pins ok-80e3ba0-fe9e293)
 **Size:** 1 file, +6 -1: `onlykey/okcore.cpp` (`okcore_flashset_2ndpinhashpublic()`).
 **Order:** applies to `fe9e293` (`git am` clean), alone or after 0012, 0013, 0015, 0016 and 0017. Firmware only.
-**Status:** staged on our builds (soft key and developer hard key). Not sent - the maintainer gets it when Brad says.
+**Status:** staged on our builds (soft key and developer hard key). Sent to the maintainer 2026-11-03.
 **Protocol:** unchanged - no new message, field or reply. Only the second-profile mode byte is written in one more case.
 
 **Severity:** high for anyone it reaches. A key set up with its primary PIN alone, given a second-profile PIN later in
