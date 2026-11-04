@@ -8,9 +8,10 @@
 **Protocol:** unchanged - no new message, field or reply. Only the second-profile mode byte is written in one more case.
 
 **Severity:** high for anyone it reaches. A key set up with its primary PIN alone, given a second-profile PIN later in
-config mode, keeps unlocking with its primary PIN - and from then on decrypts every slot, stored key and derived key of
-the profile key as something else. Nothing reports an error. Getting back needs a backup. Nothing is exposed to anyone
-else: it is lost access, not leaked keys.
+config mode, keeps unlocking with its primary PIN - and from then on decrypts everything under the profile key as
+something else: its slots, stored keys and derived keys, and its FIDO2 state (the PIN retries with it), so FIDO2 answers
+PIN_BLOCKED - security-key logins stop working. Nothing says why. Getting back needs a backup. Nothing is exposed to
+anyone else: it is lost access, not leaked keys.
 
 **Not new in 3.1.0.** The code is the same in 3.0.4 (3.1.0 only reformatted it). It came with the profile key in
 `527113d` "support for PIN changing" (2019-09-12); `d285d8b` "testing 2.1.2" (2021-11-22) narrowed the nonce2 change to
@@ -42,7 +43,8 @@ re-wraps the profile key with the two-PIN secret and leaves the mode as it was. 
 - the PIN check passes - it compares hashes of the PIN's public key and never touches the profile key;
 - the profile key is unwrapped with the one-profile secret, which is not the one it was wrapped with
   (`okcrypto_aes_gcm_decrypt2(..., true)` gives bytes, not an error);
-- every slot, stored key and derived key is decrypted with those bytes.
+- every slot, stored key and derived key is decrypted with those bytes - and so is the FIDO2 auth state
+  (`ctap_flash()` mode 3, okcore.cpp), whose garbage PIN retries make FIDO2 answer `CTAP2_ERR_PIN_BLOCKED`.
 
 Seen on a soft key on our box (3.1.0 @ fe9e293 + plugins): the primary PIN unlocked it each time, and the identity
 derived from its derivation key changed with each second-PIN set (9da6d2e711b9 -> ec9c61da5839 -> 3bafe0d00eef). The
@@ -59,7 +61,8 @@ as before; a non-encrypted second profile (`NONENCRYPTEDPROFILE`) is not touched
 `tests/second-pin-keeps-primary-keys.test.js` (standalone, run by the kit on a soft key built with the fixes to judge,
 DEBUG): a blank key gets its primary PIN only, restarts, unlocks and derives a P-256 public key (`DERIVE_PUBLIC_KEY`
 from slot 128's key - public data, no press); then config mode, the second-profile PIN set, a restart, the primary PIN
-and the same derive. 3.1.0: a different key - FAIL. With 0018: the same key - PASS.
+and the same derive. 3.1.0: the derive is refused `PIN_BLOCKED` (or, where FIDO2 still answers, derives a different
+key) - FAIL. With 0018: the same key - PASS.
 
     OKEMU_ROOT=<emulator built with the fixes to judge> node bin/okt.js run tests/second-pin-keeps-primary-keys.test.js
 
@@ -74,4 +77,12 @@ wrong one read at that unlock, so its old contents stay lost; a restore from bac
 
 ## 5. Results
 
-(filled from the proof run)
+Two DEBUG soft keys built from one emulator commit (`3b60b55`), the test run on each by the kit's emulated adapter
+(`results/`):
+
+| build | derived key before | after the second PIN, config mode, restart | test |
+|---|---|---|---|
+| 3.1.0 as published (`fixes []`) | `043cf81c02c498a2...` | the derive refused `CTAP2_ERR_PIN_BLOCKED` | **FAIL** (`3.1.0-released.log`) |
+| 3.1.0 + 0018 (`fixes ["0018"]`) | `04f439ab5ad2267a...` | `04f439ab5ad2267a...` - the same key | **PASS** (`3.1.0-with-0018.log`) |
+
+`results/proof.log` is the run that built both and ran the test on each.

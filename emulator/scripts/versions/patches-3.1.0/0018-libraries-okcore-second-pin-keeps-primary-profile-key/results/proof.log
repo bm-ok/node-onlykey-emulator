@@ -1,0 +1,59 @@
+== 22:30:34 build released at 3b60b55
+== 22:30:55 built released: fixes [], debug true
+== 22:30:55 build p0018 at 3b60b55
+== 22:31:17 built p0018: fixes ["0018"], debug true
+== 22:31:17 released: the test
+   Recv packet
+   
+   4096
+     CID: %08x 
+   
+   4096
+     cmd: %02x
+   
+   4096
+   CTAPHID_CBOR
+   
+   64
+   cbor input structure: %d bytes
+   
+   256
+   cbor req: 
+   64
+   cbor output structure: %d bytes.  Return 0x%02x
+   
+   2048
+   CBOR writeback: %d ms
+   
+   2026-11-04T03:31:44.564Z =========================================
+   2026-11-04T03:31:44.564Z 
+   2026-11-04T03:31:44.582Z --- OKT-END status=finished code=1 tests=0p/1f/0s elapsed=27s reason="0018: a second-profile PIN added in config mode keeps the primary profile's keys / the primary profile derives the same key before and after the second PIN is added failed" ---
+== 22:31:44 released: test exit 1
+== 22:31:44 p0018: the test
+   2026-11-04T03:31:44.806Z   no  app6 - /home/bmatusiak/project/onlykey/OnlyKey-App has no scripts/start-desktop.mjs
+   2026-11-04T03:31:44.806Z   no  attestation - emulated mode never runs the firmware's one-time provisioning branch: FSEC latches to already-provisioned unless the flash maps at 0x0, and that configuration (vm.mmap_min_addr=0) is one nobody should run
+   2026-11-04T03:31:44.806Z   yes keyboard-capture
+   2026-11-04T03:31:44.806Z   no  usb-bus - emulated mode has no USB bus - the in-process HID bus is not enumerable
+   2026-11-04T03:31:44.806Z   no  hard-key - this file runs against a physical key only
+   2026-11-04T03:31:44.806Z   no  kernel-hid - the gadget is already owned by pid 3098844 (node bin/daemon.js --storage webapp-softkey --socket okemu-w). That process has its own device state, and driving it would provision PINs and write slots inside somebody else's device. Stop it first, or set OKT_USE_RUNNING_GADGET=yes to use it deliberately.
+   2026-11-04T03:31:44.806Z   no  client-lend - no gadget for a second client to reach: the gadget is already owned by pid 3098844 (node bin/daemon.js --storage webapp-softkey --socket okemu-w). That process has its own device state, and driving it would provision PINs and write slots inside somebody else's device. Stop it first, or set OKT_USE_RUNNING_GADGET=yes to use it deliberately.
+   2026-11-04T03:31:44.806Z   no  client-access - no gadget for a second client to reach: the gadget is already owned by pid 3098844 (node bin/daemon.js --storage webapp-softkey --socket okemu-w). That process has its own device state, and driving it would provision PINs and write slots inside somebody else's device. Stop it first, or set OKT_USE_RUNNING_GADGET=yes to use it deliberately.
+   2026-11-04T03:31:44.806Z   no  bus-detach - no gadget to detach from: the gadget is already owned by pid 3098844 (node bin/daemon.js --storage webapp-softkey --socket okemu-w). That process has its own device state, and driving it would provision PINs and write slots inside somebody else's device. Stop it first, or set OKT_USE_RUNNING_GADGET=yes to use it deliberately.
+   2026-11-04T03:31:44.806Z   yes display
+   2026-11-04T03:31:44.806Z   yes full-wipe
+   2026-11-04T03:31:44.806Z   yes fido-reset
+   2026-11-04T03:31:44.806Z files      : 1
+   2026-11-04T03:31:44.806Z 
+   --- /home/bmatusiak/project/onlykey/node-onlykey-emulator/emulator/scripts/versions/patches-3.1.0/0018-libraries-okcore-second-pin-keeps-primary-profile-key/tests/second-pin-keeps-primary-keys.test.js
+   2026-11-04T03:31:44.809Z state      : blank
+   2026-11-04T03:31:46.457Z device     : booted, generation 0 (socket at /run/user/1000/okt-3112413-0.sock)
+   2026-11-04T03:31:46.460Z   suite: 0018: a second-profile PIN added in config mode keeps the primary profile's keys
+   2026-11-04T03:31:49.701Z   device rebooted (generation 1)
+   2026-11-04T03:31:54.970Z   before: 04f439ab5ad2267a33993d18...
+   2026-11-04T03:32:06.780Z   second-profile PIN committed in config mode
+   2026-11-04T03:32:07.623Z   device rebooted (generation 2)
+   2026-11-04T03:32:12.081Z   after:  04f439ab5ad2267a33993d18...
+   2026-11-04T03:32:12.082Z     ok   the primary profile derives the same key before and after the second PIN is added
+   2026-11-04T03:32:12.100Z --- OKT-END status=finished code=0 tests=1p/0f/0s elapsed=27s reason="all tests passed" ---
+== 22:32:12 p0018: test exit 0
+== 22:32:12 SECOND-PIN-PROOF: OK - 3.1.0 as released FAILS, with 0018 PASSES
