@@ -76,6 +76,13 @@ const MAX_TX_QUEUE = 4096;
  * there does.
  */
 const STALL_DROP_MS = 250;
+/*
+ * ...AND RETRIED THAT LONG, NOT ONLY WAITED (box, 2026-11-04: a budget-paid RSA sign's answer was dropped "after 251
+ * ms" with the host reading all along - the clock ran while this process was busy elsewhere, and the 1 ms retry ran a
+ * few times at most, so the desktop waited out its 30 s for a report it never got). The host counts absent only when
+ * the endpoint stayed full through this many retries as well: a stall of this process's own is not the host's.
+ */
+const STALL_MIN_TRIES = 100;
 
 class GadgetDevice {
   constructor(spec, onOutput) {
@@ -91,6 +98,7 @@ class GadgetDevice {
     /* When the endpoint first refused a write (0 = not stalled), and whether
      * the host has been judged absent - see STALL_DROP_MS. */
     this.stalledSince = 0;
+    this.stallTries = 0;
     this.hostAbsent = false;
   }
 
@@ -191,24 +199,27 @@ class GadgetDevice {
         fs.writeSync(this.fd, this.txQueue[0]);
         this.txQueue.shift();
         this.stalledSince = 0;
+    this.stallTries = 0;
       } catch (err) {
         if (err.code === 'EAGAIN') {
           /* Endpoint queue full - let the host drain it and come back, unless
            * it has been full so long that nobody is reading (STALL_DROP_MS). */
           const now = Date.now();
           if (!this.stalledSince) this.stalledSince = now;
-          if (now - this.stalledSince > STALL_DROP_MS) {
+          this.stallTries += 1;
+          if (now - this.stalledSince > STALL_DROP_MS && this.stallTries >= STALL_MIN_TRIES) {
             /*
              * SAID, FOR THE INTERFACES A HOST TALKS ON (box, 2026-11-04: a budget-paid RSA sign's 5-report answer never
              * reached the desktop - "vendor-bridge: no answer in 30000 ms" - and nothing showed whether reports were
              * dropped here). The debug console drops whenever no monitor reads it: not said.
              */
             if (this.spec.name !== 'seremu') {
-              console.error(`[okemu] gadget ${this.spec.name}: the host took nothing for ${now - this.stalledSince} ms - ${this.txQueue.length} report(s) dropped, the host counted absent`);
+              console.error(`[okemu] gadget ${this.spec.name}: the host took nothing for ${now - this.stalledSince} ms (${this.stallTries} tries) - ${this.txQueue.length} report(s) dropped, the host counted absent`);
             }
             this.txDropped += this.txQueue.length;
             this.txQueue.length = 0;
             this.stalledSince = 0;
+    this.stallTries = 0;
             this.hostAbsent = true;
             this.draining = false;
             return;
@@ -239,6 +250,7 @@ class GadgetDevice {
     this.draining = false;
     this.retryPending = false;
     this.stalledSince = 0;
+    this.stallTries = 0;
     this.hostAbsent = false;
     try { fs.closeSync(fd); } catch { /* going away anyway */ }
   }
