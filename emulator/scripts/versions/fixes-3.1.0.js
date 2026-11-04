@@ -14,6 +14,10 @@
  *   0018  okcore: a second-profile PIN added in config mode records the two-profile mode, so the primary profile's key
  *         is unwrapped with the secret it was wrapped with - before it, the primary PIN still unlocked and every slot
  *         and derived key read as something else (sent 2026-11-03)
+ *   0019  fido2: handle_packets() takes only a FIDO-endpoint report, so an OnlyKey message on the vendor interface
+ *         during an RSA private-key operation waits for recvmsg - before it, handle_packets() (called between
+ *         rsa_private()'s steps) parsed it as CTAPHID and it was lost: a poll for an RSA sign's result over the vendor
+ *         tunnel was never answered (2026-11-04; not sent)
  *
  * SKIPPED (a SKIPPED file in its folder, beside its HOLD: the maintainer declined it - kept, never staged, never
  * proposed again):
@@ -36,7 +40,7 @@
  * build.json records which, as `fixes`.
  */
 module.exports = {
-  names: ["0012", "0013", "0015", "0017", "0018"],
+  names: ["0012", "0013", "0015", "0017", "0018", "0019"],
   experimental: ["0016"],
   held: ["0014"],
   byName: {
@@ -127,6 +131,16 @@ module.exports = {
         edits: [
           ["    okeeprom_eeget_2ndprofilemode(&p2mode);\n    if (p2mode != NONENCRYPTEDPROFILE) { //profile key not used for plausible deniability mode or international fw\n#ifdef STD_VERSION\n        if (!initcheck) {\n            // Default to standard profile\n            p2mode = STDPROFILE2;\n            okeeprom_eeset_2ndprofilemode(&p2mode);\n",
            "    okeeprom_eeget_2ndprofilemode(&p2mode);\n    if (p2mode != NONENCRYPTEDPROFILE) { //profile key not used for plausible deniability mode or international fw\n#ifdef STD_VERSION\n        // The profile key is wrapped below under the shared secret of the two\n        // PINs, and an unlock unwraps it with that secret only when the mode\n        // is STDPROFILE2 (password.cpp). Record the mode whenever a second PIN\n        // is set, not only at first setup, so a second PIN added in config\n        // mode is unwrapped with the secret it was wrapped with.\n        if (p2mode != STDPROFILE2) {\n            // Default to standard profile\n            p2mode = STDPROFILE2;\n            okeeprom_eeset_2ndprofilemode(&p2mode);\n"],
+        ],
+      },
+    ],
+    "0019": [
+      /* 0019-fido2-handle_packets-takes-only-a-FIDO-report.patch */
+      {
+        file: "libraries/fido2/device.cpp",
+        edits: [
+          ["int handle_packets() {\n    uint8_t hidmsg[64];\n    memset(hidmsg, 0, sizeof(hidmsg));\n    int n = RawHID.recv(hidmsg, 0);\n    if (n) {\n        if (ctaphid_handle_packet(hidmsg) == CTAPHID_CANCEL) {\n",
+           "int handle_packets() {\n    uint8_t hidmsg[64];\n    memset(hidmsg, 0, sizeof(hidmsg));\n    // Only a report on the FIDO endpoint (RawHID.available() counts it alone,\n    // and RawHID.recv() serves it first). recv() also serves the vendor\n    // endpoint, and this runs inside long operations - an RSA private-key\n    // operation calls it between its steps (mbedtls rsa.cpp) - where an\n    // OnlyKey message on the vendor interface, a host's poll for the result,\n    // would be parsed as CTAPHID and lost. Left queued, recvmsg() takes it\n    // once the operation is done.\n    if (!RawHID.available()) return 0;\n    int n = RawHID.recv(hidmsg, 0);\n    if (n) {\n        if (ctaphid_handle_packet(hidmsg) == CTAPHID_CANCEL) {\n"],
         ],
       },
     ],

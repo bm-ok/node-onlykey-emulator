@@ -1,0 +1,53 @@
+From 360615482fe651b6cb2ed5c8394a4e842441a655 Mon Sep 17 00:00:00 2001
+From: bmatusiak <bmatusiak@gmail.com>
+Date: Wed, 4 Nov 2026 17:25:10 -0500
+Subject: [PATCH] fido2: handle_packets() takes only a FIDO report, so a vendor
+ message during an RSA operation is not lost
+
+RawHID.recv() serves both interfaces (the FIDO endpoint first, then the
+vendor one) and says which. handle_packets() passes whatever it takes to
+ctaphid_handle_packet(). It runs inside long operations: mbedtls rsa.cpp
+calls it between the steps of every RSA private-key operation, so FIDO
+requests do not time out. An OnlyKey message that arrives on the vendor
+interface then - a host's poll for the result (OKPING), or its next
+request - is parsed as CTAPHID and lost. The operation finishes and stores
+its answer, and no one ever asks for it: the host waits for an answer to a
+poll the key never read.
+
+Seen with an RSA-2048 sign asked over the WebAuthn tunnel on the vendor
+interface: the reply to the request says "pending", and the poll 200 ms
+later lands inside rsa_private() and is gone. The same holds for an RSA
+decrypt, and for any vendor message during either.
+
+handle_packets() now takes a report only when the FIDO endpoint has one
+(RawHID.available() counts that endpoint alone), so a vendor report stays
+queued for recvmsg(), which takes it once the operation is done. A FIDO
+frame a host sends on the vendor interface (the Android case recvmsg()
+handles) waits for the operation's end too, rather than being read inside
+it.
+---
+ fido2/device.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/fido2/device.cpp b/fido2/device.cpp
+index d2b39b6..c321eec 100644
+--- a/fido2/device.cpp
++++ b/fido2/device.cpp
+@@ -440,6 +440,14 @@ int ctap_challenge_test(uint32_t wait, uint8_t b1, uint8_t b2, uint8_t b3) {
+ int handle_packets() {
+     uint8_t hidmsg[64];
+     memset(hidmsg, 0, sizeof(hidmsg));
++    // Only a report on the FIDO endpoint (RawHID.available() counts it alone,
++    // and RawHID.recv() serves it first). recv() also serves the vendor
++    // endpoint, and this runs inside long operations - an RSA private-key
++    // operation calls it between its steps (mbedtls rsa.cpp) - where an
++    // OnlyKey message on the vendor interface, a host's poll for the result,
++    // would be parsed as CTAPHID and lost. Left queued, recvmsg() takes it
++    // once the operation is done.
++    if (!RawHID.available()) return 0;
+     int n = RawHID.recv(hidmsg, 0);
+     if (n) {
+         if (ctaphid_handle_packet(hidmsg) == CTAPHID_CANCEL) {
+-- 
+2.55.0.windows.2
+
