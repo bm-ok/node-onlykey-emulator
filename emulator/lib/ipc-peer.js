@@ -157,6 +157,8 @@ class IpcPeer extends EventEmitter {
              * payload), and a PIN-set step asked before the last was taken counted short ("not between 7 - 10")
              */
             pending: this.emu.started ? this.emu.pressPending() : 0,
+            /* the firmware's sense rounds so far: a press taken ends a round or two later (its release is a round) */
+            rounds: this.emu.started ? this.emu.rounds() : 0,
           });
           break;
         default:
