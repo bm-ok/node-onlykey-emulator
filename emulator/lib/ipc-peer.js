@@ -151,6 +151,12 @@ class IpcPeer extends EventEmitter {
             plugged: this.plugged,
             started: this.emu.started,
             storageDir: this.emu.storageDir,
+            /*
+             * presses queued and not yet taken by the firmware (okemu_press.cpp): a caller that pressed a PIN asks
+             * until 0 before it says it pressed it - in config mode each digit taken blinks 200 ms (OnlyKey.ino
+             * payload), and a PIN-set step asked before the last was taken counted short ("not between 7 - 10")
+             */
+            pending: this.emu.started ? this.emu.pressPending() : 0,
           });
           break;
         default:
