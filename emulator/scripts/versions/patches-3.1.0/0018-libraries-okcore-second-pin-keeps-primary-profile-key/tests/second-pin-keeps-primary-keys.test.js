@@ -14,7 +14,8 @@
  *
  * The test: a blank key gets its primary PIN only, restarts, unlocks and derives a P-256 public key (DERIVE_PUBLIC_KEY
  * from slot 128's key - public data, no press). Config mode, the second-profile PIN set, a restart, the primary PIN
- * again and the same derive. 3.1.0: a different key - FAIL. With 0018: the same key - PASS.
+ * again and the same derive. 3.1.0: the derive is refused PIN_BLOCKED (the FIDO2 state is stored under the profile key
+ * as well) or derives a different key - FAIL. With 0018: the same key - PASS.
  *
  * Standalone, run by the kit from this folder on a soft key built with the fixes to judge, DEBUG (the PIN steps wait on
  * the firmware's console):
@@ -111,7 +112,20 @@ describe('0018: a second-profile PIN added in config mode keeps the primary prof
     /* the primary profile again, after a restart */
     await restartLocked(device, signal);
     await device.unlock(PINS.primary, { signal });
-    const after = await derivePub(device, '0018 primary profile', signal);
+    /*
+     * The FIDO2 state (the PIN retries with it) is stored encrypted under the profile key too (okcore.cpp, the auth
+     * state read): with the profile key unwrapped wrongly it decrypts to garbage and the key answers PIN_BLOCKED to the
+     * derive - the same fault seen from FIDO2's side, said as such.
+     */
+    let after;
+    try {
+      after = await derivePub(device, '0018 primary profile', signal);
+    } catch (e) {
+      if (/PIN_BLOCKED/.test(String(e && e.message))) {
+        assert.ok(false, 'after a second-profile PIN was added in config mode the primary profile\'s FIDO2 state reads as PIN blocked - it is stored under the profile key, which was unwrapped with the wrong secret');
+      }
+      throw e;
+    }
     log(`after:  ${after.toString('hex').slice(0, 24)}...`);
 
     assert.bytes(after, before, 'the primary profile derives a different key after a second-profile PIN was added in config mode - its profile key was unwrapped with the wrong secret');
