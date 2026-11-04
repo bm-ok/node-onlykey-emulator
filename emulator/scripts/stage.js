@@ -2138,6 +2138,8 @@ function writeBuildInfo(stats, release, debugOn, stdEdition, duoModel, pluginNam
      * feature (src/buildInfo.ts), never a firmware version's.
      */
     ...(pluginNames.length ? { plugins: pluginNames } : {}),
+    /* the fixes carried on top of the pins, as build.json says them - the release manifest checks each app's against the hex's */
+    fixes: release.fixes || [],
     /**
      * The plugins the storage slot is named after: those that keep state of
      * their own. A stateless plugin (key_chain) joins or leaves a build without
