@@ -55,21 +55,13 @@ static int vb_free_buffers(void) {
   for (int i = 0; i < n; i++) usb_free(got[i]);
   return n;
 }
-/* [free buffers, vendor tx queued, unread bytes (to 255): vendor fido console] - one hex line, to fit under 0x39800 */
-static void vb_usb_state(uint8_t *st) {
-  uint32_t v[5] = {(uint32_t)vb_free_buffers(), usb_tx_packet_count(RAWHID_TX_ENDPOINT2), usb_rx_byte_count(RAWHID_RX_ENDPOINT2),
-    usb_rx_byte_count(RAWHID_RX_ENDPOINT), usb_rx_byte_count(SEREMU_RX_ENDPOINT)};
-  for (int i = 0; i < 5; i++) st[i] = v[i] > 255 ? 255 : (uint8_t)v[i];
-}
 #endif
 
 static void vb_send(const uint8_t *data, int len) {
   uint8_t r[64];
   int at = 0;
 #if defined(DEBUG) && !defined(OK_EMULATOR)
-  /* each report's tries (1-5), or 0 for one dropped after its fifth - said once the whole answer is out */
-  uint8_t tried[16];
-  int reports = 0;
+  uint8_t dropped = 0; /* reports given up after their fifth try */
 #endif
   for (uint8_t index = 0;; index++) {
     memset(r, 0, sizeof(r));
@@ -90,7 +82,7 @@ static void vb_send(const uint8_t *data, int len) {
       if (RawHID.send2(r, 100)) break;
     }
 #if defined(DEBUG) && !defined(OK_EMULATOR)
-    if (reports < (int)sizeof(tried)) tried[reports++] = tries < 5 ? (uint8_t)(tries + 1) : 0;
+    if (tries == 5) dropped++;
 #else
     (void)tries;
 #endif
@@ -98,14 +90,11 @@ static void vb_send(const uint8_t *data, int len) {
   }
   memset(r, 0, sizeof(r));
 #if defined(DEBUG) && !defined(OK_EMULATOR)
-  /* VBS: [len lo, len hi, the state after the answer (vb_usb_state), each report's tries 1-5 or 00 = DROPPED] */
-  uint8_t line[2 + 5 + sizeof(tried)];
-  line[0] = len & 0xff;
-  line[1] = (len >> 8) & 0xff;
-  vb_usb_state(line + 2);
-  memcpy(line + 7, tried, reports);
+  /* VBS: [free buffers, vendor tx queued, unread vendor bytes, unread console bytes, reports DROPPED] - hex, after the answer */
+  uint8_t line[5] = {(uint8_t)vb_free_buffers(), (uint8_t)usb_tx_packet_count(RAWHID_TX_ENDPOINT2),
+    (uint8_t)usb_rx_byte_count(RAWHID_RX_ENDPOINT2), (uint8_t)usb_rx_byte_count(SEREMU_RX_ENDPOINT), dropped};
   Serial.print("VBS ");
-  byteprint(line, 7 + reports);
+  byteprint(line, 5);
 #endif
 }
 
