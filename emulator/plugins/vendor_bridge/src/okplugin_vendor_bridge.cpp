@@ -49,6 +49,7 @@ static void vb_reset(void) {
  * The descriptor table is private to usb_dev.c; its address is in the USB0_BDTPAGE registers. Never on the emulator.
  */
 #if defined(DEBUG) && !defined(OK_EMULATOR)
+#include "kinetis.h" /* USB0_BDTPAGE1-3 */
 #include "usb_dev.h"
 /* [marker, vendor tx queued, even slot's descriptor byte, odd slot's] - one hex line (the hex sits within bytes of 0x39800) */
 static void vb_slots(uint8_t marker) {
