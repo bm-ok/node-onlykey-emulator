@@ -63,9 +63,6 @@ static void vb_slots(uint8_t marker) {
 static void vb_send(const uint8_t *data, int len) {
   uint8_t r[64];
   int at = 0;
-#if defined(DEBUG) && !defined(OK_EMULATOR)
-  uint8_t dropped = 0; /* reports given up after their fifth try */
-#endif
   for (uint8_t index = 0;; index++) {
     memset(r, 0, sizeof(r));
     r[0] = 0xFD;
@@ -80,22 +77,13 @@ static void vb_send(const uint8_t *data, int len) {
     memcpy(r + start, data + at, n);
     at += n;
     r[1] = index | (at >= len ? 0x80 : 0);
-    int tries = 0;
-    for (; tries < 5; tries++) {
+    for (int tries = 0; tries < 5; tries++) {
       if (RawHID.send2(r, 100)) break;
     }
-#if defined(DEBUG) && !defined(OK_EMULATOR)
-    if (tries == 5) dropped++;
-#else
-    (void)tries;
-#endif
     if (at >= len) break;
   }
   memset(r, 0, sizeof(r));
 #if defined(DEBUG) && !defined(OK_EMULATOR)
-  /* one hex line after the answer, marked BB (no text: the hex sits within bytes of 0x39800): [BB, free buffers, vendor tx
-     queued, reports DROPPED] */
-  if (dropped) { uint8_t d[2] = {0xBD, dropped}; byteprint(d, 2); } /* BD n: n reports dropped */
   vb_slots(0xBB); /* BB: after the answer */
 #endif
 }
