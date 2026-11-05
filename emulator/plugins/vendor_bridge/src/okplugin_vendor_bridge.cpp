@@ -55,19 +55,23 @@ static int vb_free_buffers(void) {
   for (int i = 0; i < n; i++) usb_free(got[i]);
   return n;
 }
-static void vb_usb_state(const char *when) {
-  Serial.print("VB usb "); Serial.print(when);
-  Serial.print(": free "); Serial.print(vb_free_buffers()); Serial.print("/"); Serial.print(NUM_USB_BUFFERS);
-  Serial.print(" tx vendor "); Serial.print(usb_tx_packet_count(RAWHID_TX_ENDPOINT2));
-  Serial.print(" fido "); Serial.print(usb_tx_packet_count(RAWHID_TX_ENDPOINT));
-  Serial.print(" console "); Serial.print(usb_tx_packet_count(SEREMU_TX_ENDPOINT));
-  Serial.print(" | unread vendor "); Serial.print(usb_rx_byte_count(RAWHID_RX_ENDPOINT2));
-  Serial.print(" fido "); Serial.print(usb_rx_byte_count(RAWHID_RX_ENDPOINT));
-  Serial.print(" console "); Serial.println(usb_rx_byte_count(SEREMU_RX_ENDPOINT));
+/* [free buffers, tx queued: vendor fido console, unread bytes (to 255): vendor fido console] - one hex line, to fit under 0x39800 */
+static void vb_usb_state(uint8_t *st) {
+  uint32_t v[7] = {(uint32_t)vb_free_buffers(), usb_tx_packet_count(RAWHID_TX_ENDPOINT2), usb_tx_packet_count(RAWHID_TX_ENDPOINT),
+    usb_tx_packet_count(SEREMU_TX_ENDPOINT), usb_rx_byte_count(RAWHID_RX_ENDPOINT2), usb_rx_byte_count(RAWHID_RX_ENDPOINT),
+    usb_rx_byte_count(SEREMU_RX_ENDPOINT)};
+  for (int i = 0; i < 7; i++) st[i] = v[i] > 255 ? 255 : (uint8_t)v[i];
 }
-#define VB_SAW(when) vb_usb_state(when)
+/* VBR: a request came - the state as it lands */
+static void vb_saw_request(void) {
+  uint8_t st[7];
+  vb_usb_state(st);
+  Serial.print("VBR ");
+  byteprint(st, 7);
+}
+#define VB_SAW() vb_saw_request()
 #else
-#define VB_SAW(when) ((void)0)
+#define VB_SAW() ((void)0)
 #endif
 
 static void vb_send(const uint8_t *data, int len) {
@@ -105,10 +109,14 @@ static void vb_send(const uint8_t *data, int len) {
   }
   memset(r, 0, sizeof(r));
 #if defined(DEBUG) && !defined(OK_EMULATOR)
-  Serial.print("VB sent "); Serial.print(len); Serial.print(" bytes in "); Serial.print(reports); Serial.print(" report(s), tries:");
-  for (int i = 0; i < reports; i++) { Serial.print(" "); if (tried[i]) Serial.print(tried[i]); else Serial.print("DROPPED"); }
-  Serial.println();
-  VB_SAW("after the answer");
+  /* VBS: [len lo, len hi, the state after the answer (vb_usb_state), each report's tries 1-5 or 00 = DROPPED] */
+  uint8_t line[2 + 7 + sizeof(tried)];
+  line[0] = len & 0xff;
+  line[1] = (len >> 8) & 0xff;
+  vb_usb_state(line + 2);
+  memcpy(line + 9, tried, reports);
+  Serial.print("VBS ");
+  byteprint(line, 9 + reports);
 #endif
 }
 
@@ -119,7 +127,7 @@ static void vb_send(const uint8_t *data, int len) {
 void okplugin_vendor_bridge_recv(uint8_t *buffer) {
   uint8_t index = buffer[5] & 0x7f;
   uint8_t last = buffer[5] & 0x80;
-  if (index == 0) VB_SAW("at a request");
+  if (index == 0) VB_SAW();
   if (index == 0) vb_reset();
   if (index != req_next || req_have + VB_IN > (int)sizeof(req)) {
     vb_reset();
