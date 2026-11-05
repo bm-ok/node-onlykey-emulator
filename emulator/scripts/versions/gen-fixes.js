@@ -77,12 +77,19 @@ const held = all.filter((d) => fs.existsSync(path.join(dir, d, 'HOLD')));
  * version.json lists it; it is named apart so a person sees which of a release's patches are ours alone.
  */
 const experimentalDirs = all.filter((d) => !held.includes(d) && fs.existsSync(path.join(dir, d, 'EXPERIMENTAL')));
+/*
+ * HARDKEY: a folder holding a HARDKEY file (its reason inside) fixes code only a hard key compiles - the Teensy USB stack
+ * (OnlyKey-Firmware usb_dev.c), whose place the emulator's own USB takes (core/okemu_usb.cpp). Its edits say
+ * `targets: []` (stage.js patchTargets: no emulator target), so the soft key stages without it; build-hardkey.sh applies
+ * it as every listed patch.
+ */
+const hardKeyOnly = (d) => fs.existsSync(path.join(dir, d, 'HARDKEY'));
 const fixOf = (d) => {
   const repo = REPOS[d.split('-')[1]];
   if (!repo) throw new Error(`${d}: the folder name says which repository (${Object.keys(REPOS).join(' | ')}) after the number`);
   const patches = fs.readdirSync(path.join(dir, d)).filter((f) => f.endsWith('.patch')).sort();
   if (!patches.length) throw new Error(`${d}: no .patch file`);
-  return { name: d.slice(0, 4), patches: patches.map((p) => ({ patch: p, files: parsePatch(fs.readFileSync(path.join(dir, d, p), 'utf8'), repo) })) };
+  return { name: d.slice(0, 4), hardKey: hardKeyOnly(d), patches: patches.map((p) => ({ patch: p, files: parsePatch(fs.readFileSync(path.join(dir, d, p), 'utf8'), repo) })) };
 };
 const fixes = all.filter((d) => !held.includes(d) && !experimentalDirs.includes(d)).map(fixOf);
 const experimental = experimentalDirs.map(fixOf);
@@ -93,7 +100,9 @@ const patchLines = (list, indent) => {
   for (const f of list) {
     for (const p of f.patches) {
       for (const file of p.files) {
-        out.push(`${indent}/* ${p.patch} */`, `${indent}{`, `${indent}  file: ${q(file.file)},`, `${indent}  edits: [`);
+        out.push(`${indent}/* ${p.patch} */`, `${indent}{`, `${indent}  file: ${q(file.file)},`);
+        if (f.hardKey) out.push(`${indent}  targets: [], /* a hard key's code only (HARDKEY): no emulator target stages it */`);
+        out.push(`${indent}  edits: [`);
         for (const [find, replace] of file.edits) out.push(`${indent}    [${q(find)},`, `${indent}     ${q(replace)}],`);
         out.push(`${indent}  ],`, `${indent}},`);
       }

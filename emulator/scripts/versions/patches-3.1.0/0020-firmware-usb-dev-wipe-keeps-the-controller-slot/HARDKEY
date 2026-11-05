@@ -1,0 +1,1 @@
+A hard key only: usb_dev.c is the Teensy USB stack; the soft key compiles the emulator USB layer (core/okemu_usb.cpp) instead.

@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bmatusiak <bmatusiak@gmail.com>
+Date: Wed, 4 Nov 2026 22:05:25 -0500
+Subject: [PATCH] usb_dev: wipe_usb_buffer() sends the next packet to the slot
+ the controller waits on
+
+At an unlock, OnlyKey.ino answers the messages waiting for 200 ms and then
+calls wipe_usb_buffer() ("Wipe old responses"). The wipe frees every packet
+the USB controller still owns - one armed in an endpoint's buffer
+descriptor that the host has not taken yet - and resets tx_state with the
+mapping copied from SET_CONFIGURATION. That mapping has ODD_FREE and
+EVEN_FREE the other way round for this case: the controller's even/odd
+pointer stays on the freed packet's slot (only a bus reset, ODDRST, moves
+it), so the next packet must go into that slot.
+
+Instead the next packet went into the other slot. The controller kept
+waiting on the empty one, so the packet sat unsent until the following
+packet filled the slot it waited on; then both went out, the older one
+second - taken by the host as the reply to its next request.
+
+Seen with the vendor interface after a key restart (the idle lockout) and
+an unlock while a host was talking to the key: the first answer after the
+unlock was not delivered (the host waited out 30 s), the next request read
+that answer as its own and failed. Measured on a DEBUG 3.1.0 key from the
+endpoint's buffer descriptors: the answer armed in the even slot
+(BDT_OWN | DATA0) stayed owned for 30 s; the next answer went to the odd
+slot, and both were taken within a millisecond.
+
+The freed packet's slot also carries the data toggle the host expects,
+since the host never received that packet.
+---
+ usb_dev.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/usb_dev.c b/usb_dev.c
+index b887b52..777e30d 100644
+--- a/usb_dev.c
++++ b/usb_dev.c
+@@ -293,12 +293,26 @@ void wipe_usb_buffer() {
+ 			tx_first[i] = NULL;
+ 			tx_last[i] = NULL;
+ 			usb_rx_byte_count_data[i] = 0;
++			/*
++			 * The next packet goes where the controller waits. A packet the
++			 * controller still owned (armed, not yet taken by the host) was
++			 * freed above, but the controller's even/odd pointer for this
++			 * endpoint stays on its slot - only a bus reset (ODDRST) moves it.
++			 * ODD_FREE means the even slot was armed: the next packet is even.
++			 * EVEN_FREE means the odd slot was armed: the next is odd. (The
++			 * mapping copied from SET_CONFIGURATION had these two the other way
++			 * round: the next packet went into the slot the controller does not
++			 * look at, and sat there until the following packet filled the
++			 * other one - then both went out, the older one second, as the reply
++			 * to the wrong request.) The slot also carries the data toggle the
++			 * host expects, since it never received the freed packet.
++			 */
+ 			switch (tx_state[i]) {
+-			  case TX_STATE_EVEN_FREE:
++			  case TX_STATE_ODD_FREE:
+ 			  case TX_STATE_NONE_FREE_EVEN_FIRST:
+ 				tx_state[i] = TX_STATE_BOTH_FREE_EVEN_FIRST;
+ 				break;
+-			  case TX_STATE_ODD_FREE:
++			  case TX_STATE_EVEN_FREE:
+ 			  case TX_STATE_NONE_FREE_ODD_FIRST:
+ 				tx_state[i] = TX_STATE_BOTH_FREE_ODD_FIRST;
+ 				break;
+-- 
+2.55.0
+

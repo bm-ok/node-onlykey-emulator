@@ -67,8 +67,13 @@ for p in "$PATCHES"/*/*.patch; do
   [ -f "$p" ] || continue
   n=$(basename "$(dirname "$p")" | cut -c1-4)
   case " $LISTED " in *" $n "*) ;; *) continue ;; esac
-  git -C "$OUT/libraries" -c user.name=build-hardkey -c user.email=build@localhost am -q "$p" \
-    || { git -C "$OUT/libraries" am --abort; echo "   $(basename "$p") does not apply to $LIB_PIN - not building"; exit 1; }
+  # the folder names its repository after the number (gen-fixes.js REPOS): nnnn-libraries-... or nnnn-firmware-...
+  case "$(basename "$(dirname "$p")" | cut -d- -f2)" in
+    firmware) repo=OnlyKey-Firmware; pin=$FW_PIN ;;
+    *) repo=libraries; pin=$LIB_PIN ;;
+  esac
+  git -C "$OUT/$repo" -c user.name=build-hardkey -c user.email=build@localhost am -q "$p" \
+    || { git -C "$OUT/$repo" am --abort; echo "   $(basename "$p") does not apply to $repo $pin - not building"; exit 1; }
   fixes="$fixes $n"
 done
 say "   patches applied (version_control):${fixes:- none, the release as published}"

@@ -18,6 +18,10 @@
  *         during an RSA private-key operation waits for recvmsg - before it, handle_packets() (called between
  *         rsa_private()'s steps) parsed it as CTAPHID and it was lost: a poll for an RSA sign's result over the vendor
  *         tunnel was never answered (2026-11-04; not sent)
+ *   0020  usb_dev (OnlyKey-Firmware, a hard key only): wipe_usb_buffer() - run at every unlock - sends the next packet to
+ *         the slot the USB controller waits on - before it, a packet freed by the wipe left the next answer in the
+ *         other slot, unsent until the one after it: the first answer after an unlock lost, the next request reading
+ *         it as its own (2026-11-04; not sent)
  *
  * SKIPPED (a SKIPPED file in its folder, beside its HOLD: the maintainer declined it - kept, never staged, never
  * proposed again):
@@ -40,7 +44,7 @@
  * build.json records which, as `fixes`.
  */
 module.exports = {
-  names: ["0012", "0013", "0015", "0017", "0018", "0019"],
+  names: ["0012", "0013", "0015", "0017", "0018", "0019", "0020"],
   experimental: ["0016"],
   held: ["0014"],
   byName: {
@@ -141,6 +145,17 @@ module.exports = {
         edits: [
           ["int handle_packets() {\n    uint8_t hidmsg[64];\n    memset(hidmsg, 0, sizeof(hidmsg));\n    int n = RawHID.recv(hidmsg, 0);\n    if (n) {\n        if (ctaphid_handle_packet(hidmsg) == CTAPHID_CANCEL) {\n",
            "int handle_packets() {\n    uint8_t hidmsg[64];\n    memset(hidmsg, 0, sizeof(hidmsg));\n    // Only a report on the FIDO endpoint (RawHID.available() counts it alone,\n    // and RawHID.recv() serves it first). recv() also serves the vendor\n    // endpoint, and this runs inside long operations - an RSA private-key\n    // operation calls it between its steps (mbedtls rsa.cpp) - where an\n    // OnlyKey message on the vendor interface, a host's poll for the result,\n    // would be parsed as CTAPHID and lost. Left queued, recvmsg() takes it\n    // once the operation is done.\n    if (!RawHID.available()) return 0;\n    int n = RawHID.recv(hidmsg, 0);\n    if (n) {\n        if (ctaphid_handle_packet(hidmsg) == CTAPHID_CANCEL) {\n"],
+        ],
+      },
+    ],
+    "0020": [
+      /* 0020-usb_dev-wipe_usb_buffer-sends-the-next-packet-to-the-slot-the-controller-waits-on.patch */
+      {
+        file: "OnlyKey-Firmware/usb_dev.c",
+        targets: [], /* a hard key's code only (HARDKEY): no emulator target stages it */
+        edits: [
+          ["\t\t\ttx_first[i] = NULL;\n\t\t\ttx_last[i] = NULL;\n\t\t\tusb_rx_byte_count_data[i] = 0;\n\t\t\tswitch (tx_state[i]) {\n\t\t\t  case TX_STATE_EVEN_FREE:\n\t\t\t  case TX_STATE_NONE_FREE_EVEN_FIRST:\n\t\t\t\ttx_state[i] = TX_STATE_BOTH_FREE_EVEN_FIRST;\n\t\t\t\tbreak;\n\t\t\t  case TX_STATE_ODD_FREE:\n\t\t\t  case TX_STATE_NONE_FREE_ODD_FIRST:\n\t\t\t\ttx_state[i] = TX_STATE_BOTH_FREE_ODD_FIRST;\n\t\t\t\tbreak;\n",
+           "\t\t\ttx_first[i] = NULL;\n\t\t\ttx_last[i] = NULL;\n\t\t\tusb_rx_byte_count_data[i] = 0;\n\t\t\t/*\n\t\t\t * The next packet goes where the controller waits. A packet the\n\t\t\t * controller still owned (armed, not yet taken by the host) was\n\t\t\t * freed above, but the controller's even/odd pointer for this\n\t\t\t * endpoint stays on its slot - only a bus reset (ODDRST) moves it.\n\t\t\t * ODD_FREE means the even slot was armed: the next packet is even.\n\t\t\t * EVEN_FREE means the odd slot was armed: the next is odd. (The\n\t\t\t * mapping copied from SET_CONFIGURATION had these two the other way\n\t\t\t * round: the next packet went into the slot the controller does not\n\t\t\t * look at, and sat there until the following packet filled the\n\t\t\t * other one - then both went out, the older one second, as the reply\n\t\t\t * to the wrong request.) The slot also carries the data toggle the\n\t\t\t * host expects, since it never received the freed packet.\n\t\t\t */\n\t\t\tswitch (tx_state[i]) {\n\t\t\t  case TX_STATE_ODD_FREE:\n\t\t\t  case TX_STATE_NONE_FREE_EVEN_FIRST:\n\t\t\t\ttx_state[i] = TX_STATE_BOTH_FREE_EVEN_FIRST;\n\t\t\t\tbreak;\n\t\t\t  case TX_STATE_EVEN_FREE:\n\t\t\t  case TX_STATE_NONE_FREE_ODD_FIRST:\n\t\t\t\ttx_state[i] = TX_STATE_BOTH_FREE_ODD_FIRST;\n\t\t\t\tbreak;\n"],
         ],
       },
     ],
