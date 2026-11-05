@@ -46,4 +46,7 @@ line in vendor_bridge printed the endpoint's two descriptors (emulator plugins/v
 (the wipe's), after it the even slot `0x88` (BDT_OWN | DATA0) - still owned 30 s later at the next request - then the odd
 slot filled (`0xC8`) and both were taken within a millisecond (`0x24`, `0x64`).
 
-The test is the same rehearsal on a key with this patch: the first read after the unlock answers.
+The test is the same rehearsal on a key with this patch: the first read after the unlock answers. Measured the same
+evening on blue-key with 0020: 4 runs of 4 passed (failing every time without it), no "no answer", no transit failure;
+the descriptors after the unlock's wipe: both 0, the first answer into the odd slot (`0xC8`) - the one the controller
+waited on - and taken 16 ms later (`0x64`).
