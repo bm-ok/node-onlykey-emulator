@@ -90,10 +90,9 @@ static void vb_send(const uint8_t *data, int len) {
   memset(r, 0, sizeof(r));
 #if defined(DEBUG) && !defined(OK_EMULATOR)
   /* one hex line after the answer, marked BB (no text: the hex sits within bytes of 0x39800): [BB, free buffers, vendor tx
-     queued, unread vendor bytes, unread console bytes, reports DROPPED] */
-  uint8_t line[6] = {0xBB, (uint8_t)vb_free_buffers(), (uint8_t)usb_tx_packet_count(RAWHID_TX_ENDPOINT2),
-    (uint8_t)usb_rx_byte_count(RAWHID_RX_ENDPOINT2), (uint8_t)usb_rx_byte_count(SEREMU_RX_ENDPOINT), dropped};
-  byteprint(line, 6);
+     queued, reports DROPPED] */
+  uint8_t line[4] = {0xBB, (uint8_t)vb_free_buffers(), (uint8_t)usb_tx_packet_count(RAWHID_TX_ENDPOINT2), dropped};
+  byteprint(line, 4);
 #endif
 }
 
