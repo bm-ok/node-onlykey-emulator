@@ -37,9 +37,46 @@ static void vb_reset(void) {
   req_next = 0;
 }
 
+/*
+ * THE USB STACK'S STATE, ON A DEBUG HARD KEY (Brad's connection bug, 2026-11-04: after a lockout restart and an unlock the
+ * key said it sent its answer and the host heard nothing for 30-42 s). Every endpoint draws its packets from one pool of
+ * NUM_USB_BUFFERS; a report written to an interface the sketch is not reading - the vendor interface while locked, the
+ * console on a key not reading it - keeps one, and a send with none free gives up (vb_send: 5 x 100 ms, then dropped).
+ * The pool's count is private to the core (usb_mem.c), so it is counted by taking every free buffer and giving them all
+ * back at once. Said after the send, on the console - never on the emulator, whose USB is not this.
+ */
+#if defined(DEBUG) && !defined(OK_EMULATOR)
+#include "usb_dev.h"
+static int vb_free_buffers(void) {
+  usb_packet_t *got[NUM_USB_BUFFERS];
+  int n = 0;
+  while (n < NUM_USB_BUFFERS && (got[n] = usb_malloc()) != NULL) n++;
+  for (int i = 0; i < n; i++) usb_free(got[i]);
+  return n;
+}
+static void vb_usb_state(const char *when) {
+  Serial.print("VB usb "); Serial.print(when);
+  Serial.print(": free "); Serial.print(vb_free_buffers()); Serial.print("/"); Serial.print(NUM_USB_BUFFERS);
+  Serial.print(" tx vendor "); Serial.print(usb_tx_packet_count(RAWHID_TX_ENDPOINT2));
+  Serial.print(" fido "); Serial.print(usb_tx_packet_count(RAWHID_TX_ENDPOINT));
+  Serial.print(" console "); Serial.print(usb_tx_packet_count(SEREMU_TX_ENDPOINT));
+  Serial.print(" | unread vendor "); Serial.print(usb_rx_byte_count(RAWHID_RX_ENDPOINT2));
+  Serial.print(" fido "); Serial.print(usb_rx_byte_count(RAWHID_RX_ENDPOINT));
+  Serial.print(" console "); Serial.println(usb_rx_byte_count(SEREMU_RX_ENDPOINT));
+}
+#define VB_SAW(when) vb_usb_state(when)
+#else
+#define VB_SAW(when) ((void)0)
+#endif
+
 static void vb_send(const uint8_t *data, int len) {
   uint8_t r[64];
   int at = 0;
+#if defined(DEBUG) && !defined(OK_EMULATOR)
+  /* each report's tries (1-5), or 0 for one dropped after its fifth - said once the whole answer is out */
+  uint8_t tried[16];
+  int reports = 0;
+#endif
   for (uint8_t index = 0;; index++) {
     memset(r, 0, sizeof(r));
     r[0] = 0xFD;
@@ -54,12 +91,24 @@ static void vb_send(const uint8_t *data, int len) {
     memcpy(r + start, data + at, n);
     at += n;
     r[1] = index | (at >= len ? 0x80 : 0);
-    for (int tries = 0; tries < 5; tries++) {
+    int tries = 0;
+    for (; tries < 5; tries++) {
       if (RawHID.send2(r, 100)) break;
     }
+#if defined(DEBUG) && !defined(OK_EMULATOR)
+    if (reports < (int)sizeof(tried)) tried[reports++] = tries < 5 ? (uint8_t)(tries + 1) : 0;
+#else
+    (void)tries;
+#endif
     if (at >= len) break;
   }
   memset(r, 0, sizeof(r));
+#if defined(DEBUG) && !defined(OK_EMULATOR)
+  Serial.print("VB sent "); Serial.print(len); Serial.print(" bytes in "); Serial.print(reports); Serial.print(" report(s), tries:");
+  for (int i = 0; i < reports; i++) { Serial.print(" "); if (tried[i]) Serial.print(tried[i]); else Serial.print("DROPPED"); }
+  Serial.println();
+  VB_SAW("after the answer");
+#endif
 }
 
 /*
@@ -69,6 +118,7 @@ static void vb_send(const uint8_t *data, int len) {
 void okplugin_vendor_bridge_recv(uint8_t *buffer) {
   uint8_t index = buffer[5] & 0x7f;
   uint8_t last = buffer[5] & 0x80;
+  if (index == 0) VB_SAW("at a request");
   if (index == 0) vb_reset();
   if (index != req_next || req_have + VB_IN > (int)sizeof(req)) {
     vb_reset();
