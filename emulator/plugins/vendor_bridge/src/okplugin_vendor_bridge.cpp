@@ -46,7 +46,6 @@ static void vb_reset(void) {
  * back at once. Said after the send, on the console - never on the emulator, whose USB is not this.
  */
 #if defined(DEBUG) && !defined(OK_EMULATOR)
-#include "Arduino.h" /* Serial: the debug console */
 #include "usb_dev.h"
 static int vb_free_buffers(void) {
   usb_packet_t *got[NUM_USB_BUFFERS];
@@ -90,11 +89,11 @@ static void vb_send(const uint8_t *data, int len) {
   }
   memset(r, 0, sizeof(r));
 #if defined(DEBUG) && !defined(OK_EMULATOR)
-  /* VBS: [free buffers, vendor tx queued, unread vendor bytes, unread console bytes, reports DROPPED] - hex, after the answer */
-  uint8_t line[5] = {(uint8_t)vb_free_buffers(), (uint8_t)usb_tx_packet_count(RAWHID_TX_ENDPOINT2),
+  /* one hex line after the answer, marked BB (no text: the hex sits within bytes of 0x39800): [BB, free buffers, vendor tx
+     queued, unread vendor bytes, unread console bytes, reports DROPPED] */
+  uint8_t line[6] = {0xBB, (uint8_t)vb_free_buffers(), (uint8_t)usb_tx_packet_count(RAWHID_TX_ENDPOINT2),
     (uint8_t)usb_rx_byte_count(RAWHID_RX_ENDPOINT2), (uint8_t)usb_rx_byte_count(SEREMU_RX_ENDPOINT), dropped};
-  Serial.print("VBS ");
-  byteprint(line, 5);
+  byteprint(line, 6);
 #endif
 }
 
