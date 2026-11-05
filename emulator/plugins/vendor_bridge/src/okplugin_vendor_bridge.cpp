@@ -46,6 +46,7 @@ static void vb_reset(void) {
  * back at once. Said after the send, on the console - never on the emulator, whose USB is not this.
  */
 #if defined(DEBUG) && !defined(OK_EMULATOR)
+#include "Arduino.h" /* Serial: the debug console */
 #include "usb_dev.h"
 static int vb_free_buffers(void) {
   usb_packet_t *got[NUM_USB_BUFFERS];
