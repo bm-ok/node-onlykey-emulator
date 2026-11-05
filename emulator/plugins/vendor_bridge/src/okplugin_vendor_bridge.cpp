@@ -42,17 +42,20 @@ static void vb_reset(void) {
  * key said it sent its answer and the host heard nothing for 30-42 s). Every endpoint draws its packets from one pool of
  * NUM_USB_BUFFERS; a report written to an interface the sketch is not reading - the vendor interface while locked, the
  * console on a key not reading it - keeps one, and a send with none free gives up (vb_send: 5 x 100 ms, then dropped).
- * The pool's count is private to the core (usb_mem.c), so it is counted by taking every free buffer and giving them all
- * back at once. Said after the send, on the console - never on the emulator, whose USB is not this.
+ * Measured on blue-key that evening: the pool was not it - the lost answer's send found 18 of 30 free, nothing queued,
+ * nothing dropped, and the host still heard nothing until its next write. So now the endpoint's own two hardware slots
+ * (the Kinetis buffer descriptors, even and odd): the controller owns a slot (BDT_OWN, 0x80) until the host takes its
+ * packet. Said after an answer and when the next request lands - an answer still owned then is one the key is holding.
+ * The descriptor table is private to usb_dev.c; its address is in the USB0_BDTPAGE registers. Never on the emulator.
  */
 #if defined(DEBUG) && !defined(OK_EMULATOR)
 #include "usb_dev.h"
-static int vb_free_buffers(void) {
-  usb_packet_t *got[NUM_USB_BUFFERS];
-  int n = 0;
-  while (n < NUM_USB_BUFFERS && (got[n] = usb_malloc()) != NULL) n++;
-  for (int i = 0; i < n; i++) usb_free(got[i]);
-  return n;
+/* [marker, vendor tx queued, even slot's descriptor byte, odd slot's] - one hex line (the hex sits within bytes of 0x39800) */
+static void vb_slots(uint8_t marker) {
+  volatile uint32_t *bdt = (volatile uint32_t *)((USB0_BDTPAGE1 << 8) | (USB0_BDTPAGE2 << 16) | (USB0_BDTPAGE3 << 24));
+  uint8_t line[4] = {marker, (uint8_t)usb_tx_packet_count(RAWHID_TX_ENDPOINT2),
+    (uint8_t)bdt[((RAWHID_TX_ENDPOINT2 << 2) | 2) * 2], (uint8_t)bdt[((RAWHID_TX_ENDPOINT2 << 2) | 3) * 2]};
+  byteprint(line, 4);
 }
 #endif
 
@@ -91,8 +94,8 @@ static void vb_send(const uint8_t *data, int len) {
 #if defined(DEBUG) && !defined(OK_EMULATOR)
   /* one hex line after the answer, marked BB (no text: the hex sits within bytes of 0x39800): [BB, free buffers, vendor tx
      queued, reports DROPPED] */
-  uint8_t line[4] = {0xBB, (uint8_t)vb_free_buffers(), (uint8_t)usb_tx_packet_count(RAWHID_TX_ENDPOINT2), dropped};
-  byteprint(line, 4);
+  if (dropped) { uint8_t d[2] = {0xBD, dropped}; byteprint(d, 2); } /* BD n: n reports dropped */
+  vb_slots(0xBB); /* BB: after the answer */
 #endif
 }
 
@@ -103,6 +106,9 @@ static void vb_send(const uint8_t *data, int len) {
 void okplugin_vendor_bridge_recv(uint8_t *buffer) {
   uint8_t index = buffer[5] & 0x7f;
   uint8_t last = buffer[5] & 0x80;
+#if defined(DEBUG) && !defined(OK_EMULATOR)
+  if (index == 0) vb_slots(0xBA); /* BA: a request lands - the last answer's slots now */
+#endif
   if (index == 0) vb_reset();
   if (index != req_next || req_have + VB_IN > (int)sizeof(req)) {
     vb_reset();
