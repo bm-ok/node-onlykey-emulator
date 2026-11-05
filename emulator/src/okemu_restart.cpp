@@ -71,7 +71,16 @@ namespace {
  * CPU_RESTART() would be a silent no-op.
  */
 const uintptr_t kAIRCR     = (uintptr_t)OKEMU_SCS(0xE000ED0CUL);
+/*
+ * THE KERNEL'S PAGE, NOT 4096 (2026-11-05): mprotect() works on whole pages and refuses an address that does not start
+ * one. On a 16 KB-page phone (Android 15+) a 4 KB-aligned address is refused - the trap would never arm, and
+ * CPU_RESTART() would be a silent no-op. okemu_regs.cpp aligns the array so this page lies inside it.
+ */
+#ifdef _WIN32
 const size_t    kPageSize  = 4096;
+#else
+const size_t    kPageSize  = (size_t)sysconf(_SC_PAGESIZE);
+#endif
 const uintptr_t kSCBPage   = kAIRCR & ~(uintptr_t)(kPageSize - 1);
 
 okemu_event_sink g_restart_fn  = nullptr;

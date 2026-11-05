@@ -188,6 +188,10 @@ set_target_properties(okemu_firmware PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # own. -Bsymbolic binds our references to our definition rather than letting
 # the dynamic linker interpose libc's.
 target_link_options(okemu PRIVATE -Wl,-Bsymbolic)
+# 16 KB PAGES (Android 15+; Google Play requires it for new apps from Nov 2025): the library's segments aligned to
+# 16 KB, so it loads on a phone whose kernel runs 16 KB pages. NDK r27 still links 4 KB by default (r28 does this
+# itself) - the APK's other libraries already were; this one was 0x1000 (llvm-readelf -l, 2026-11-05).
+target_link_options(okemu PRIVATE -Wl,-z,max-page-size=16384)
 
 find_library(log-lib log)
 target_link_libraries(okemu okemu_firmware ${log-lib})

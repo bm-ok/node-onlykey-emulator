@@ -37,11 +37,20 @@
  * Page-aligned on purpose: okemu_restart.cpp write-protects the page holding
  * SCB_AIRCR so a store to it faults and can be turned into a restart request,
  * and page protection works on whole pages.
+ *
+ * 64 KB OFF WINDOWS (2026-11-05: Android 15+ phones may run 16 KB pages, some arm64 Linux kernels 64 KB): the page the
+ * trap protects is the kernel's page, whatever its size, so the array is aligned to the largest one - that page then
+ * lies inside the array (AIRCR is at +0xED0C), never over a neighbour. Windows protects 4 KB pages, and MSVC's
+ * __declspec(align) stops at 8192. The alignment is in .bss: no bytes added to the library.
  */
 #include <stddef.h>
 
 #ifndef OKEMU_REGS_ALIGN
+#ifdef _WIN32
 #define OKEMU_REGS_ALIGN 4096
+#else
+#define OKEMU_REGS_ALIGN 65536
+#endif
 #endif
 
 #ifdef _MSC_VER
